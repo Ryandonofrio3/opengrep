@@ -20,7 +20,8 @@
   "dependencies": {
     "@mixedbread/sdk": "^0.38.0",
     "commander": "^14.0.2",
-    "ora": "^5.4.1"
+    "ora": "^5.4.1",
+    "p-limit": "^3.1.0"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",
