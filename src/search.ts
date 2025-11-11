@@ -1,34 +1,9 @@
-import { cancel, confirm, isCancel } from "@clack/prompts";
 import type { Command } from "commander";
 import { Command as CommanderCommand } from "commander";
 import { getJWTToken } from "./lib/auth";
 import { createMxbaiClient } from "./lib/mxbai";
-import { loginAction } from "./login";
-import { getStoredToken } from "./token";
-
-interface FileMetadata {
-  path: string;
-  hash: string;
-}
-
-async function ensureAuthenticated(): Promise<void> {
-  const token = await getStoredToken();
-  if (token) {
-    return;
-  }
-
-  const shouldLogin = await confirm({
-    message: "You are not logged in. Would you like to login now?",
-    initialValue: true,
-  });
-
-  if (isCancel(shouldLogin) || !shouldLogin) {
-    cancel("Operation cancelled");
-    process.exit(0);
-  }
-
-  await loginAction();
-}
+import type { FileMetadata } from "./types";
+import { ensureAuthenticated } from "./utils";
 
 export const search: Command = new CommanderCommand("search")
   .description("File pattern searcher")
