@@ -288,8 +288,7 @@ def main() -> int:
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",  # Block the original Grep tool
-            "permissionDecisionReason": "Semantic search completed by mgrep",
-            "additionalContext": payload_text  # The actual search results
+            "permissionDecisionReason": "Semantic search completed by mgrep: " + payload_text,
         }
     }
 
