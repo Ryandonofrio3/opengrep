@@ -1,6 +1,7 @@
 import Mixedbread from "@mixedbread/sdk";
 import { ensureAuthenticated, isDevelopment } from "../utils";
 import { getJWTToken } from "./auth";
+import { NodeGit, type Git } from "./git";
 import { MixedbreadStore, type Store } from "./store";
 
 const BASE_URL = isDevelopment()
@@ -18,4 +19,11 @@ export async function createStore(): Promise<Store> {
     apiKey: jwtToken,
   });
   return new MixedbreadStore(client);
+}
+
+/**
+ * Creates a Git instance
+ */
+export function createGit(): Git {
+  return new NodeGit();
 }
