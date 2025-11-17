@@ -2,7 +2,66 @@ import { join, normalize } from "node:path";
 import type { Command } from "commander";
 import { Command as CommanderCommand } from "commander";
 import { createStore } from "../lib/context";
-import type { ChunkType, FileMetadata } from "../lib/store";
+import type {
+  AskResponse,
+  ChunkType,
+  FileMetadata,
+  SearchResponse,
+} from "../lib/store";
+
+function extractSources(response: AskResponse): { [key: number]: ChunkType } {
+  const sources: { [key: number]: ChunkType } = {};
+  const answer = response.answer;
+
+  // Match ALL cite tags and capture the i="..."
+  const citeTags = answer.match(/<cite i="(\d+(?:-\d+)?)"/g) ?? [];
+
+  for (const tag of citeTags) {
+    // Extract the index or index range inside the tag.
+    const index = tag.match(/i="(\d+(?:-\d+)?)"/)?.[1];
+    if (!index) continue;
+
+    // Case 1: Single index
+    if (!index.includes("-")) {
+      const idx = Number(index);
+      if (!Number.isNaN(idx) && idx < response.sources.length) {
+        sources[idx] = response.sources[idx];
+      }
+      continue;
+    }
+
+    // Case 2: Range "start-end"
+    const [start, end] = index.split("-").map(Number);
+
+    if (
+      !Number.isNaN(start) &&
+      !Number.isNaN(end) &&
+      start >= 0 &&
+      end >= start &&
+      end < response.sources.length
+    ) {
+      for (let i = start; i <= end; i++) {
+        sources[i] = response.sources[i];
+      }
+    }
+  }
+
+  return sources;
+}
+
+function formatAskResponse(response: AskResponse, show_content: boolean) {
+  const sources = extractSources(response);
+  const sourceEntries = Object.entries(sources).map(
+    ([index, chunk]) => `${index}: ${formatChunk(chunk, show_content)}`,
+  );
+  return `${response.answer}\n\n${sourceEntries.join("\n")}`;
+}
+
+function formatSearchResponse(response: SearchResponse, show_content: boolean) {
+  return response.data
+    .map((chunk) => formatChunk(chunk, show_content))
+    .join("\n");
+}
 
 function formatChunk(chunk: ChunkType, show_content: boolean) {
   const pwd = process.cwd();
@@ -46,12 +105,17 @@ export const search: Command = new CommanderCommand("search")
     "10",
   )
   .option("-c", "Show content of the results", false)
+  .option(
+    "-a, --answer",
+    "Generate an answer to the question based on the results",
+    false,
+  )
   .argument("<pattern>", "The pattern to search for")
   .argument("[path]", "The path to search in")
   .allowUnknownOption(true)
   .allowExcessArguments(true)
   .action(async (pattern, exec_path, _options, cmd) => {
-    const options: { store: string; m: string; c: boolean } =
+    const options: { store: string; m: string; c: boolean; a: boolean } =
       cmd.optsWithGlobals();
     if (exec_path?.startsWith("--")) {
       exec_path = "";
@@ -63,25 +127,44 @@ export const search: Command = new CommanderCommand("search")
         ? exec_path
         : normalize(join(process.cwd(), exec_path ?? ""));
 
-      const results = await store.search(
-        options.store,
-        pattern,
-        parseInt(options.m, 10),
-        { rerank: true },
-        {
-          all: [
-            {
-              key: "path",
-              operator: "starts_with",
-              value: search_path,
-            },
-          ],
-        },
-      );
+      let response: string;
+      if (options.a) {
+        const results = await store.search(
+          options.store,
+          pattern,
+          parseInt(options.m, 10),
+          { rerank: true },
+          {
+            all: [
+              {
+                key: "path",
+                operator: "starts_with",
+                value: search_path,
+              },
+            ],
+          },
+        );
+        response = formatSearchResponse(results, options.c);
+      } else {
+        const results = await store.ask(
+          options.store,
+          pattern,
+          parseInt(options.m, 10),
+          { rerank: true },
+          {
+            all: [
+              {
+                key: "path",
+                operator: "starts_with",
+                value: search_path,
+              },
+            ],
+          },
+        );
+        response = formatAskResponse(results, options.c);
+      }
 
-      console.log(
-        results.data.map((chunk) => formatChunk(chunk, options.c)).join("\n"),
-      );
+      console.log(response);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       console.error("Failed to search:", message);

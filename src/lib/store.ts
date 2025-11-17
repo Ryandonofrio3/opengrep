@@ -34,6 +34,11 @@ export interface SearchResponse {
   data: ChunkType[];
 }
 
+export interface AskResponse {
+  answer: string;
+  sources: ChunkType[];
+}
+
 export interface CreateStoreOptions {
   name: string;
   description?: string;
@@ -77,6 +82,17 @@ export interface Store {
    * Create a new store
    */
   create(options: CreateStoreOptions): Promise<unknown>;
+
+  /**
+   * Ask a question to a store
+   */
+  ask(
+    storeId: string,
+    question: string,
+    top_k?: number,
+    search_options?: { rerank?: boolean },
+    filters?: SearchFilter,
+  ): Promise<AskResponse>;
 }
 
 /**
@@ -157,5 +173,26 @@ export class MixedbreadStore implements Store {
       name: options.name,
       description: options.description,
     });
+  }
+
+  async ask(
+    storeId: string,
+    question: string,
+    top_k?: number,
+    search_options?: { rerank?: boolean },
+    filters?: SearchFilter,
+  ): Promise<AskResponse> {
+    const response = await this.client.stores.questionAnswering({
+      query: question,
+      store_identifiers: [storeId],
+      top_k,
+      search_options,
+      filters,
+    });
+
+    return {
+      answer: response.answer,
+      sources: response.sources as ChunkType[],
+    };
   }
 }
