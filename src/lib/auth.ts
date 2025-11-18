@@ -19,7 +19,7 @@ export type AuthClient = typeof authClient;
  */
 export async function getJWTToken(): Promise<string> {
   // Check for API key in environment variable first
-  const apiKey = process.env.MIXEDBREAD_API_KEY;
+  const apiKey = process.env.MXBAI_API_KEY;
   if (apiKey) {
     return apiKey;
   }
@@ -28,7 +28,7 @@ export async function getJWTToken(): Promise<string> {
   const token = await getStoredToken();
   if (!token) {
     throw new Error(
-      "No authentication token found. Please run 'mgrep login' to authenticate or set MIXEDBREAD_API_KEY environment variable.",
+      "No authentication token found. Please run 'mgrep login' to authenticate or set MXBAI_API_KEY environment variable.",
     );
   }
 

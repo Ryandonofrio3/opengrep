@@ -30,9 +30,9 @@
    A browser window (or verification URL) guides you through Mixedbread authentication.
 
    **Alternative: API Key Authentication**
-   For CI/CD or headless environments, set the `MIXEDBREAD_API_KEY` environment variable:
+   For CI/CD or headless environments, set the `MXBAI_API_KEY` environment variable:
    ```bash
-   export MIXEDBREAD_API_KEY=your_api_key_here
+   export MXBAI_API_KEY=your_api_key_here
    ```
    This bypasses the browser login flow entirely.
 
@@ -103,7 +103,7 @@ mgrep -a "What code parsers are available?"  # generate an answer to the questio
 - `search` accepts most `grep`-style switches, and politely ignores anything it cannot support, so existing muscle memory still works.
 
 **Environment Variables:**
-- `MIXEDBREAD_API_KEY`: Set this to authenticate without browser login (ideal for CI/CD)
+- `MXBAI_API_KEY`: Set this to authenticate without browser login (ideal for CI/CD)
 - `MXBAI_STORE`: Override the default store name (default: `mgrep`)
 
 ## Development

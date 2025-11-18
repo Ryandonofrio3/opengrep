@@ -53,7 +53,7 @@ export async function listStoreFileHashes(
 
 export async function ensureAuthenticated(): Promise<void> {
   // Check if API key is set via environment variable
-  if (process.env.MIXEDBREAD_API_KEY) {
+  if (process.env.MXBAI_API_KEY) {
     return;
   }
 
