@@ -375,7 +375,7 @@ export class LocalStore implements Store {
                 type: "text",
                 text: r.content as string,
                 score: scores.get(key) || 0,
-                metadata: { path: r.path as string, hash: "" },
+                metadata: { path: r.path as string, hash: (r.hash as string) || "" },
                 generated_metadata: {
                     start_line: r.start_line as number,
                     num_lines: (r.end_line as number) - (r.start_line as number),
