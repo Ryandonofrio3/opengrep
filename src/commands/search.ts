@@ -1,4 +1,4 @@
-import { extname, join, normalize } from "node:path";
+import { extname, join, relative, normalize } from "node:path";
 import { highlight } from "cli-highlight";
 import type { Command } from "commander";
 import { Command as CommanderCommand } from "commander";
@@ -11,6 +11,15 @@ import {
   formatDryRunSummary,
 } from "../lib/sync-helpers";
 import { initialSync, MetaStore } from "../utils";
+
+// --- UI Helpers (No external deps) ---
+const style = {
+  reset: (s: string) => `\x1b[0m${s}\x1b[0m`,
+  bold: (s: string) => `\x1b[1m${s}\x1b[22m`,
+  dim: (s: string) => `\x1b[2m${s}\x1b[22m`,
+  blue: (s: string) => `\x1b[34m${s}\x1b[39m`,
+  green: (s: string) => `\x1b[32m${s}\x1b[39m`,
+};
 
 function detectLanguage(filePath: string): string {
   const ext = extname(filePath).toLowerCase();
@@ -27,6 +36,8 @@ function detectLanguage(filePath: string): string {
       return "rust";
     case ".go":
       return "go";
+    case ".java":
+      return "java";
     case ".json":
       return "json";
     case ".md":
@@ -34,58 +45,149 @@ function detectLanguage(filePath: string): string {
     case ".yml":
     case ".yaml":
       return "yaml";
+    case ".css":
+      return "css";
+    case ".html":
+      return "html";
+    case ".sh":
+      return "bash";
     default:
       return "plaintext";
   }
 }
 
-function formatSearchResponse(response: SearchResponse, show_content: boolean) {
-  return response.data
-    .map((chunk) => formatChunk(chunk, show_content))
-    .join("\n");
-}
+/**
+ * Parses the specialized chunk format: "Header\n---\nBody"
+ */
+function parseChunkText(text: string) {
+  const separator = "\n---\n";
+  const index = text.indexOf(separator);
 
-function formatChunk(chunk: ChunkType, show_content: boolean) {
-  const pwd = process.cwd();
-  const filePath = (chunk.metadata as FileMetadata)?.path || "";
-  const path = filePath.replace(pwd, "") || "Unknown path";
-  let line_range = "";
-  let content = "";
-  switch (chunk.type) {
-    case "text": {
-      const start_line = (chunk.generated_metadata?.start_line as number) + 1;
-      const end_line =
-        start_line + (chunk.generated_metadata?.num_lines as number);
-      line_range = `:${start_line}-${end_line}`;
-      content = show_content ? (chunk.text ?? "") : "";
-      if (show_content && content) {
-        const lang = detectLanguage(filePath);
-        try {
-          content = highlight(content, {
-            language: lang,
-            ignoreIllegals: true,
-          });
-        } catch (_err) {
-          content = chunk.text ?? "";
-        }
-      }
-      break;
-    }
-    case "image_url":
-      line_range =
-        chunk.generated_metadata?.type === "pdf"
-          ? `, page ${(chunk.chunk_index ?? 0) + 1}`
-          : "";
-      break;
-    case "audio_url":
-      line_range = "";
-      break;
-    case "video_url":
-      line_range = "";
-      break;
+  if (index === -1) {
+    return { header: "", body: text };
   }
 
-  return `.${path}${line_range} (Relevance Score: ${chunk.score.toFixed(4)})${content ? `\n${content}` : ""}`;
+  return {
+    header: text.substring(0, index),
+    body: text.substring(index + separator.length),
+  };
+}
+
+function formatSearchResults(
+  response: SearchResponse,
+  options: {
+    showContent: boolean;
+    perFile: number;
+    showScores: boolean;
+    compact: boolean;
+    root: string;
+  },
+) {
+  const { data } = response;
+  if (data.length === 0) return "";
+
+  // 1. Group by File Path (Preserve score order)
+  const grouped = new Map<string, ChunkType[]>();
+  for (const chunk of data) {
+    const rawPath = (chunk.metadata as FileMetadata)?.path || "Unknown path";
+    if (!grouped.has(rawPath)) {
+      grouped.set(rawPath, []);
+    }
+    grouped.get(rawPath)?.push(chunk);
+  }
+
+  // 2. Summary Line
+  const totalFiles = grouped.size;
+  const summary = style.bold(
+    `Found ${data.length} relevant chunks in ${totalFiles} files. Showing top ${totalFiles} files.`,
+  );
+  let output = `\n${summary}\n`;
+
+  // 3. Iterate Groups
+  for (const [rawPath, chunks] of grouped) {
+    // Path Formatting
+    let displayPath = rawPath;
+    if (rawPath !== "Unknown path") {
+      displayPath = relative(options.root, rawPath);
+    }
+
+    // Compact Mode: Just the path
+    if (options.compact) {
+      output += `${style.green("📂 " + displayPath)}\n`;
+      continue;
+    }
+
+    // File Header
+    output += `\n${style.green("📂 " + style.bold(displayPath))}\n`;
+
+    // Render Chunks
+    const shownChunks = chunks.slice(0, options.perFile);
+    const remaining = chunks.length - shownChunks.length;
+
+    for (const chunk of shownChunks) {
+      // Metadata
+      const startLine = (chunk.generated_metadata?.start_line ?? 0) + 1;
+      const scoreDisplay = options.showScores
+        ? style.dim(` (score: ${chunk.score.toFixed(3)})`)
+        : "";
+
+      // Parse Text
+      const { header, body } = parseChunkText(chunk.text ?? "");
+
+      // Context Header (e.g. "Function: myFunc")
+      if (header) {
+        const contextClean = header.replace(/^File:.*$/m, "").trim();
+        if (contextClean) {
+          output += `   ${style.dim("Context: " + contextClean)}\n`;
+        }
+      }
+
+      // Code Body Highlighting
+      let displayBody = body;
+      if (!options.showContent) {
+        // Truncate if not requesting full content
+        const lines = body.split("\n");
+        if (lines.length > 6) {
+          displayBody = lines.slice(0, 6).join("\n");
+        }
+      }
+
+      // Apply Syntax Highlighting (ANSI)
+      let highlighted = displayBody;
+      try {
+        const lang = detectLanguage(rawPath);
+        highlighted = highlight(displayBody, {
+          language: lang,
+          ignoreIllegals: true,
+        });
+      } catch {
+        // Fallback to plain text
+      }
+
+      // Apply Line Numbers to the Highlighted Text
+      const lines = highlighted.split("\n");
+      const snippet = lines
+        .map((line, i) => {
+          const lineNum = style.dim(`${startLine + i}`.padStart(4) + " │");
+          return `${lineNum} ${line}`;
+        })
+        .join("\n");
+
+      output += `${snippet}${scoreDisplay}\n`;
+
+      // Visual separator between chunks in same file if needed
+      if (shownChunks.length > 1 && chunk !== shownChunks[shownChunks.length - 1]) {
+        output += style.dim("      ...\n");
+      }
+    }
+
+    // "More matches" footer
+    if (remaining > 0) {
+      output += `      ${style.dim(`... +${remaining} more matches in this file (use --per-file ${chunks.length} to see all)`)}\n`;
+    }
+  }
+
+  return output;
 }
 
 export const search: Command = new CommanderCommand("search")
@@ -94,10 +196,17 @@ export const search: Command = new CommanderCommand("search")
   .option("-r", "Recursive search", false)
   .option(
     "-m <max_count>, --max-count <max_count>",
-    "The maximum number of results to return",
-    "10",
+    "The maximum number of results to return (total)",
+    "25",
   )
-  .option("-c, --content", "Show content of the results", false)
+  .option("-c, --content", "Show full chunk content instead of snippets", false)
+  .option(
+    "--per-file <n>",
+    "Number of matches to show per file",
+    "1",
+  )
+  .option("--scores", "Show relevance scores", false)
+  .option("--compact", "Show file paths only", false)
   .option(
     "-s, --sync",
     "Syncs the local files to the store before searching",
@@ -117,9 +226,13 @@ export const search: Command = new CommanderCommand("search")
       store: string;
       m: string;
       c: boolean;
+      perFile: string;
+      scores: boolean;
+      compact: boolean;
       sync: boolean;
       dryRun: boolean;
     } = cmd.optsWithGlobals();
+
     if (exec_path?.startsWith("--")) {
       exec_path = "";
     }
@@ -186,6 +299,7 @@ export const search: Command = new CommanderCommand("search")
         ? exec_path
         : normalize(join(root, exec_path ?? ""));
 
+      // Execute Search
       const results = await store.search(
         options.store,
         pattern,
@@ -214,17 +328,24 @@ export const search: Command = new CommanderCommand("search")
               );
             }
           } catch {
-            // Store doesn't exist yet - this shouldn't happen since ensureStoreExists creates it
-            // but if it does, auto-sync will handle it on next run
             console.log(
               "No results found. The repository will be automatically indexed on your next search.\n",
             );
           }
         }
+        process.exit(0);
       }
 
-      const response = formatSearchResponse(results, options.c);
-      console.log(response);
+      // Render Output
+      const output = formatSearchResults(results, {
+        showContent: options.c,
+        perFile: parseInt(options.perFile, 10),
+        showScores: options.scores,
+        compact: options.compact,
+        root,
+      });
+
+      console.log(output);
 
       // Exit cleanly after successful search
       process.exit(0);
