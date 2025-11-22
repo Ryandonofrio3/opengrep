@@ -12,10 +12,10 @@
       "description": "Semantic code search for Claude Code. Automatically indexes your project and provides intelligent search capabilities.",
       "version": "0.1.0",
       "author": {
-        "name": "Ryan D'Onofrio"
+        "name": "Ryan D'Onofrio",
+        "email": "ryandonofrio@gmail.com"
       },
-      "skills": ["./skills/osgrep"],
-      "keywords": ["search", "semantic", "grep", "code-search"]
+      "skills": ["./skills/osgrep"]
     }
   ]
 }
