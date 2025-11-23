@@ -15,9 +15,15 @@ import { initialSync } from "../src/utils";
 
 class MemoryMetaStore {
   private store = new Map<string, string>();
+  loadCalls = 0;
+  saveCalls = 0;
 
-  async load(): Promise<void> {}
-  async save(): Promise<void> {}
+  async load(): Promise<void> {
+    this.loadCalls += 1;
+  }
+  async save(): Promise<void> {
+    this.saveCalls += 1;
+  }
   get(filePath: string): string | undefined {
     return this.store.get(filePath);
   }
@@ -219,6 +225,48 @@ describe("initialSync", () => {
     expect(store.vectorIndexCreated).toBe(true);
   });
 
+  it("skips zero-byte files from indexing", async () => {
+    const { root, filePaths } = await createTempRepo({
+      "empty.ts": "",
+    });
+
+    const fileSystem = new FakeFileSystem(filePaths);
+    const result = await initialSync(
+      store,
+      fileSystem,
+      "store",
+      root,
+      false,
+      undefined,
+      metaStore,
+    );
+
+    expect(result.indexed).toBe(0);
+    expect(result.processed).toBe(0);
+    expect(store.indexCalls).toBe(0);
+  });
+
+  it("does not persist meta or build indexes during dry run", async () => {
+    const { root, filePaths } = await createTempRepo({
+      "index.ts": "const value = 1;",
+    });
+    const fileSystem = new FakeFileSystem(filePaths);
+
+    await initialSync(
+      store,
+      fileSystem,
+      "store",
+      root,
+      true,
+      undefined,
+      metaStore,
+    );
+
+    expect(store.ftsIndexCreated).toBe(false);
+    expect(store.vectorIndexCreated).toBe(false);
+    expect(metaStore.saveCalls).toBe(0);
+  });
+
   it("reindexes when file content changes", async () => {
     const { root, filePaths } = await createTempRepo({
       "index.ts": "const value = 1;",
@@ -337,5 +385,18 @@ describe("MetaStore persistence", () => {
     await fresh.load();
 
     expect(fresh.get("/tmp/file.ts")).toBe("hash1");
+  });
+
+  it("handles missing meta file gracefully", async () => {
+    vi.doMock("node:os", () => {
+      const realOs = require("node:os") as typeof import("node:os");
+      return { ...realOs, homedir: () => tempHome };
+    });
+
+    const { MetaStore } = await import("../src/utils");
+    const meta = new MetaStore();
+    await meta.load();
+
+    expect(meta.get("/missing")).toBeUndefined();
   });
 });

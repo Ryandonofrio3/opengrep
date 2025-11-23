@@ -844,7 +844,7 @@ export class LocalStore implements Store {
     const queryVector = await this.getEmbedding(this.queryPrefix + query);
     const finalLimit = top_k ?? 10;
     const totalChunks = await table.countRows();
-    const candidateLimit = Math.min(200, Math.max(50, Math.sqrt(totalChunks)));
+    const candidateLimit = Math.min(400, Math.max(100, 2 * Math.sqrt(totalChunks)));
 
     const allFilters = Array.isArray(
       (_filters as { all?: unknown })?.all,

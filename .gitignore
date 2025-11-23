@@ -8,3 +8,6 @@ TEST_SUITE_PROMPT.md
 WATCH_MODE_PROMPT.md
 ENGINEERING_DIARY.md
 RELEASE_GUIDE.md
+osgrep/run-benchmark.sh
+run-agent-benchmark.sh
+setup-benchmark-repos.sh

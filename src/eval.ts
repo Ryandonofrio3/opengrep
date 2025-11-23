@@ -1,13 +1,25 @@
 import { LocalStore } from "./lib/local-store";
 
-type EvalCase = {
+import type { SearchResponse } from "./lib/store";
+
+export type EvalCase = {
   query: string;
   expectedPath: string;
   avoidPath?: string; // <--- New field: If this ranks HIGHER than expected, it's a fail.
   note?: string;
 };
 
-const cases: EvalCase[] = [
+export type EvalResult = {
+  rr: number;
+  found: boolean;
+  recall: number;
+  path: string;
+  query: string;
+  note?: string;
+  timeMs: number;
+};
+
+export const cases: EvalCase[] = [
   {
     query: "Where do we compute reranker scores?",
     expectedPath: "src/lib/local-store.ts",
@@ -230,6 +242,40 @@ const cases: EvalCase[] = [
 const storeId = process.argv[2] ?? "default";
 const topK = 20;
 
+export function evaluateCase(
+  response: SearchResponse,
+  evalCase: EvalCase,
+  timeMs: number,
+): EvalResult {
+  const rank = response.data.findIndex((chunk) =>
+    chunk.metadata?.path
+      ?.toLowerCase()
+      .includes(evalCase.expectedPath.toLowerCase()),
+  );
+
+  const avoidRank = response.data.findIndex((chunk) =>
+    chunk.metadata?.path
+      ?.toLowerCase()
+      .includes(evalCase.avoidPath?.toLowerCase() || "_____"),
+  );
+
+  const hitAvoid =
+    evalCase.avoidPath && avoidRank >= 0 && (rank === -1 || avoidRank < rank);
+  const found = rank >= 0 && !hitAvoid;
+  const rr = found ? 1 / (rank + 1) : 0;
+  const recall = found && rank < 10 ? 1 : 0;
+
+  return {
+    rr,
+    found,
+    recall,
+    path: evalCase.expectedPath,
+    query: evalCase.query,
+    note: evalCase.note,
+    timeMs,
+  };
+}
+
 async function run() {
   const store = new LocalStore();
   
@@ -255,15 +301,7 @@ async function run() {
     process.exit(1);
   }
 
-  const results: {
-    rr: number;
-    found: boolean;
-    recall: number;
-    path: string;
-    query: string;
-    note?: string;
-    timeMs: number;
-  }[] = [];
+  const results: EvalResult[] = [];
 
   console.log("Starting evaluation...\n");
   const startTime = performance.now();
@@ -274,32 +312,7 @@ async function run() {
     const queryEnd = performance.now();
     const timeMs = queryEnd - queryStart;
 
-    const rank = res.data.findIndex((chunk) =>
-      chunk.metadata?.path
-        ?.toLowerCase()
-        .includes(c.expectedPath.toLowerCase()),
-    );
-    
-    // Check if avoidPath is present and ranks higher (lower index) than expected
-    const avoidRank = res.data.findIndex((chunk) =>
-      chunk.metadata?.path?.toLowerCase().includes(c.avoidPath?.toLowerCase() || "_____")
-    );
-    
-    // If avoidPath is found and ranks higher than expected, it's a failure
-    const hitAvoid = c.avoidPath && avoidRank >= 0 && (rank === -1 || avoidRank < rank);
-    const found = rank >= 0 && !hitAvoid;
-    
-    const rr = found ? 1 / (rank + 1) : 0;
-    const recall = found && rank < 10 ? 1 : 0;
-    results.push({
-      rr,
-      found,
-      recall,
-      path: c.expectedPath,
-      query: c.query,
-      note: c.note,
-      timeMs,
-    });
+    results.push(evaluateCase(res, c, timeMs));
   }
 
   const totalTime = performance.now() - startTime;
