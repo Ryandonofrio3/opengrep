@@ -12,6 +12,7 @@ import type {
   Store,
   StoreFile,
   StoreInfo,
+  VectorRecord,
 } from "./store";
 import { TreeSitterChunker } from "./chunker";
 import {
@@ -20,18 +21,6 @@ import {
   formatChunkText,
 } from "./chunk-utils";
 import { WorkerManager } from "./worker-manager";
-
-type VectorRecord = {
-  id: string;
-  path: string;
-  hash: string;
-  content: string;
-  start_line: number;
-  end_line: number;
-  vector: number[];
-  chunk_index?: number;
-  is_anchor?: boolean;
-} & Record<string, unknown>;
 
 const PROFILE_ENABLED =
   process.env.OSGREP_PROFILE === "1" || process.env.OSGREP_PROFILE === "true";
@@ -54,7 +43,6 @@ export class LocalStore implements Store {
   private chunker = new TreeSitterChunker();
   private readonly VECTOR_DIMENSIONS = 384;
   private readonly EMBED_BATCH_SIZE = 12; // Smaller batches to tame thermals/memory on large repos
-  private readonly WRITE_BATCH_SIZE = 50;
   // Query prefix for embeddings: Represent this sentence for searching relevant passages
   private readonly queryPrefix =
     "Represent this sentence for searching relevant passages: ";
@@ -101,111 +89,6 @@ export class LocalStore implements Store {
     return await db.openTable(storeId);
   }
 
-  private async batchExpandWithNeighbors(
-    table: lancedb.Table,
-    records: VectorRecord[],
-  ): Promise<VectorRecord[]> {
-    const neighborIndexMap = new Map<string, Set<number>>();
-
-    records.forEach((record) => {
-      const centerIndex =
-        typeof record.chunk_index === "number" ? record.chunk_index : null;
-      if (centerIndex === null || typeof record.path !== "string") return;
-
-      const neighborIndices = [centerIndex - 1, centerIndex + 1].filter(
-        (i) => i >= 0,
-      );
-      if (neighborIndices.length === 0) return;
-
-      const safePath = record.path.replace(/'/g, "''");
-      if (!neighborIndexMap.has(safePath)) {
-        neighborIndexMap.set(safePath, new Set());
-      }
-      const indexSet = neighborIndexMap.get(safePath);
-      neighborIndices.forEach((idx) => indexSet?.add(idx));
-    });
-
-    if (neighborIndexMap.size === 0) {
-      return records;
-    }
-
-    // Build a single OR filter combining all path/index needs
-    const clauses: string[] = [];
-    for (const [safePath, indices] of neighborIndexMap.entries()) {
-      const idxList = Array.from(indices).sort((a, b) => a - b);
-      if (idxList.length === 0) continue;
-      const indexClause = idxList.join(",");
-      clauses.push(`(path = '${safePath}' AND chunk_index IN (${indexClause}))`);
-    }
-
-    if (clauses.length === 0) {
-      return records;
-    }
-
-    const neighborFilter = clauses.join(" OR ");
-    let neighbors: VectorRecord[] = [];
-    try {
-      neighbors = (await table
-        .query()
-        .filter(neighborFilter)
-        .toArray()) as VectorRecord[];
-    } catch {
-      return records;
-    }
-
-    const neighborMap = new Map<string, VectorRecord>();
-    neighbors.forEach((neighbor) => {
-      if (
-        typeof neighbor.path === "string" &&
-        typeof neighbor.chunk_index === "number"
-      ) {
-        neighborMap.set(
-          `${neighbor.path.replace(/'/g, "''")}:${neighbor.chunk_index}`,
-          neighbor,
-        );
-      }
-    });
-
-    return records.map((record) => {
-      const centerIndex =
-        typeof record.chunk_index === "number" ? record.chunk_index : null;
-      if (centerIndex === null || typeof record.path !== "string") return record;
-
-      const pathKey = record.path.replace(/'/g, "''");
-      const neighborRecords = [centerIndex - 1, centerIndex + 1]
-        .filter((i) => i >= 0)
-        .map((idx) => neighborMap.get(`${pathKey}:${idx}`))
-        .filter((n): n is VectorRecord => Boolean(n));
-
-      if (neighborRecords.length === 0) return record;
-
-      const ordered = [...neighborRecords, record].sort((a, b) => {
-        const ai = typeof a.chunk_index === "number" ? a.chunk_index : 0;
-        const bi = typeof b.chunk_index === "number" ? b.chunk_index : 0;
-        return ai - bi;
-      });
-
-      const combinedContent = ordered
-        .map((r) => String(r.content ?? ""))
-        .join("\n\n");
-      const startLine = Math.min(
-        ...ordered.map(
-          (r) => (r.start_line as number) ?? record.start_line ?? 0,
-        ),
-      );
-      const endLine = Math.max(
-        ...ordered.map((r) => (r.end_line as number) ?? record.end_line ?? 0),
-      );
-
-      return {
-        ...record,
-        content: combinedContent,
-        start_line: startLine,
-        end_line: endLine,
-      };
-    });
-  }
-
   private baseSchemaRow(): VectorRecord {
     return {
       id: "seed",
@@ -216,6 +99,8 @@ export class LocalStore implements Store {
       end_line: 0,
       chunk_index: 0,
       is_anchor: false,
+      context_prev: "",
+      context_next: "",
       vector: Array(this.VECTOR_DIMENSIONS).fill(0),
     };
   }
@@ -266,7 +151,7 @@ export class LocalStore implements Store {
     storeId: string,
     file: File | ReadableStream | NodeJS.ReadableStream | string,
     options: IndexFileOptions,
-  ): Promise<void> {
+  ): Promise<VectorRecord[]> {
     const fileIndexStart = PROFILE_ENABLED ? process.hrtime.bigint() : null;
     let fileChunkMs = 0;
     let fileEmbedMs = 0;
@@ -297,7 +182,7 @@ export class LocalStore implements Store {
       } else if (file instanceof File) {
         content = await file.text();
       } else {
-        return;
+        return [];
       }
     }
 
@@ -334,7 +219,7 @@ export class LocalStore implements Store {
     const baseChunks = anchorChunk
       ? [anchorChunk, ...parsedChunks]
       : parsedChunks;
-    if (baseChunks.length === 0) return;
+    if (baseChunks.length === 0) return [];
 
     const chunks: ChunkWithContext[] = baseChunks.map((chunk, idx) => {
       const chunkWithContext = chunk as ChunkWithContext;
@@ -360,7 +245,6 @@ export class LocalStore implements Store {
     );
 
     const BATCH_SIZE = this.EMBED_BATCH_SIZE;
-    const WRITE_BATCH_SIZE = this.WRITE_BATCH_SIZE;
     let pendingWrites: VectorRecord[] = [];
 
     for (let i = 0; i < chunkTexts.length; i += BATCH_SIZE) {
@@ -378,41 +262,22 @@ export class LocalStore implements Store {
         const chunkIndex = i + j;
         const chunk = chunks[chunkIndex];
         const vector = batchVectors[j];
+        const prev = chunkTexts[chunkIndex - 1];
+        const next = chunkTexts[chunkIndex + 1];
 
         pendingWrites.push({
           id: uuidv4(),
           path: options.metadata?.path || "",
           hash: options.metadata?.hash || "",
           content: chunkTexts[chunkIndex],
+          context_prev: typeof prev === "string" ? prev : undefined,
+          context_next: typeof next === "string" ? next : undefined,
           start_line: chunk.startLine,
           end_line: chunk.endLine,
           chunk_index: chunk.chunkIndex,
           is_anchor: chunk.isAnchor === true,
           vector,
         });
-
-        if (pendingWrites.length >= WRITE_BATCH_SIZE) {
-          const writeStart = PROFILE_ENABLED ? process.hrtime.bigint() : null;
-          await table.add(pendingWrites);
-          if (PROFILE_ENABLED && writeStart) {
-            const writeEnd = process.hrtime.bigint();
-            this.profile.totalTableWriteMs +=
-              Number(writeEnd - writeStart) / 1_000_000;
-            fileWriteMs += Number(writeEnd - writeStart) / 1_000_000;
-          }
-          pendingWrites = [];
-        }
-      }
-    }
-
-    if (pendingWrites.length > 0) {
-      const writeStart = PROFILE_ENABLED ? process.hrtime.bigint() : null;
-      await table.add(pendingWrites);
-      if (PROFILE_ENABLED && writeStart) {
-        const writeEnd = process.hrtime.bigint();
-        this.profile.totalTableWriteMs +=
-          Number(writeEnd - writeStart) / 1_000_000;
-        fileWriteMs += Number(writeEnd - writeStart) / 1_000_000;
       }
     }
 
@@ -427,6 +292,21 @@ export class LocalStore implements Store {
           `chunkTime=${fileChunkMs.toFixed(1)}ms embedTime=${fileEmbedMs.toFixed(1)}ms ` +
           `deleteTime=${fileDeleteMs.toFixed(1)}ms writeTime=${fileWriteMs.toFixed(1)}ms total=${total.toFixed(1)}ms`,
       );
+    }
+
+    return pendingWrites;
+  }
+
+  async insertBatch(storeId: string, records: VectorRecord[]): Promise<void> {
+    if (records.length === 0) return;
+
+    const table = await this.ensureTable(storeId);
+    const writeStart = PROFILE_ENABLED ? process.hrtime.bigint() : null;
+    await table.add(records);
+    if (PROFILE_ENABLED && writeStart) {
+      const writeEnd = process.hrtime.bigint();
+      this.profile.totalTableWriteMs +=
+        Number(writeEnd - writeStart) / 1_000_000;
     }
   }
 
@@ -493,6 +373,7 @@ export class LocalStore implements Store {
     // Keep balanced pools so exact matches survive to rerank
     const vectorLimit = 200;
     const ftsLimit = 200;
+    const RERANK_CAP = 50;
 
     const allFilters = Array.isArray((_filters as { all?: unknown })?.all)
       ? ((_filters as { all?: unknown }).all as Record<string, unknown>[])
@@ -549,6 +430,8 @@ export class LocalStore implements Store {
       return { data: [] };
     }
 
+    const rerankCandidates = candidates.slice(0, RERANK_CAP);
+
     // 4. Neural Reranking & Brute-Force Boosting
     const rrfValues = Array.from(rrfScores.values());
     const maxRrf = rrfValues.length > 0 ? Math.max(...rrfValues) : 0;
@@ -563,17 +446,17 @@ export class LocalStore implements Store {
     const isCodeQuery =
       /[A-Z_]|`|\(|\)|\//.test(query) || queryParts.some((p) => p.includes("_"));
 
-    let finalResults = candidates.map((r) => {
+    let finalResults = rerankCandidates.map((r) => {
       const key = `${r.path}:${r.start_line}`;
       const rrfScore = normalizeRrf(key);
       return { record: r, score: rrfScore, rrfScore, rerankScore: 0 };
     });
 
     try {
-      const docs = candidates.map((r) => String(r.content ?? ""));
+      const docs = rerankCandidates.map((r) => String(r.content ?? ""));
       const scores = await this.workerManager.rerank(query, docs);
 
-      finalResults = candidates.map((r, i) => {
+      finalResults = rerankCandidates.map((r, i) => {
         const key = `${r.path}:${r.start_line}`;
         const rrfScore = normalizeRrf(key);
         const rerankScore = scores[i] ?? 0;
@@ -626,18 +509,17 @@ export class LocalStore implements Store {
     finalResults.sort((a, b) => b.score - a.score);
     const limited = finalResults.slice(0, finalLimit);
 
-    const expandedRecords = await this.batchExpandWithNeighbors(
-      table,
-      limited.map(({ record }) => record),
-    );
-
-    const chunks: ChunkType[] = expandedRecords.map((record, idx) => {
-      const score = limited[idx]?.score ?? 0;
+    const chunks: ChunkType[] = limited.map(({ record, score }) => {
+      const contextPrev =
+        typeof record.context_prev === "string" ? record.context_prev : "";
+      const contextNext =
+        typeof record.context_next === "string" ? record.context_next : "";
+      const fullText = `${contextPrev}${record.content ?? ""}${contextNext}`;
       const startLine = (record.start_line as number) ?? 0;
       const endLine = (record.end_line as number) ?? startLine;
       return {
         type: "text",
-        text: record.content as string,
+        text: fullText,
         score,
         metadata: {
           path: record.path as string,

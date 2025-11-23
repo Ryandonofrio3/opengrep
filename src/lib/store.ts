@@ -3,6 +3,20 @@ type MetadataObject = { [key: string]: MetadataValue };
 type MetadataArray = MetadataValue[];
 type MetadataValue = MetadataPrimitive | MetadataArray | MetadataObject;
 
+export type VectorRecord = {
+  id: string;
+  path: string;
+  hash: string;
+  content: string;
+  start_line: number;
+  end_line: number;
+  vector: number[];
+  chunk_index?: number;
+  is_anchor?: boolean;
+  context_prev?: string;
+  context_next?: string;
+} & Record<string, unknown>;
+
 type MetadataRecord = Record<string, MetadataValue>;
 
 export interface FileMetadata extends MetadataRecord {
@@ -83,7 +97,12 @@ export interface Store {
     storeId: string,
     file: File | ReadableStream | NodeJS.ReadableStream | string,
     options: IndexFileOptions,
-  ): Promise<void>;
+  ): Promise<VectorRecord[]>;
+
+  /**
+   * Insert a batch of vector records
+   */
+  insertBatch(storeId: string, records: VectorRecord[]): Promise<void>;
 
   /**
    * Search in a store

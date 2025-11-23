@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { Worker } from "node:worker_threads";
 import { v4 as uuidv4 } from "uuid";
@@ -15,19 +16,20 @@ type PendingRequest = {
   reject: (reason: unknown) => void;
   payload: WorkerRequest;
   timeoutId?: NodeJS.Timeout;
+  workerIndex: number;
 };
 
 export class WorkerManager {
-  private worker!: Worker;
+  private workers: Array<Worker | null> = [];
   private vectorCache = new LRUCache<string, number[]>(VECTOR_CACHE_MAX);
   private pendingRequests = new Map<string, PendingRequest>();
-  private restartInFlight: Promise<void> | null = null;
+  private restartInFlight = new Map<number, Promise<void>>();
   private isClosing = false;
   private readonly MAX_WORKER_RSS = 6 * 1024 * 1024 * 1024; // 6GB upper bound, we restart before OOM
-  private embedQueue: Promise<void> = Promise.resolve();
+  private nextWorkerIndex = 0;
 
   constructor() {
-    this.initializeWorker();
+    this.initializeWorkers();
   }
 
   private getWorkerConfig(): { workerPath: string; execArgv: string[] } {
@@ -44,15 +46,28 @@ export class WorkerManager {
     return { workerPath: jsWorkerPath, execArgv: [] };
   }
 
-  private initializeWorker() {
-    const { workerPath, execArgv } = this.getWorkerConfig();
-    this.worker = new Worker(workerPath, { execArgv });
+  private getWorkerCount(): number {
+    const desired = Math.min(os.cpus().length - 1, 4);
+    return Math.max(1, desired);
+  }
 
-    this.worker.on("message", (message) => {
+  private initializeWorkers() {
+    const workerCount = this.getWorkerCount();
+    for (let i = 0; i < workerCount; i++) {
+      this.createWorker(i);
+    }
+  }
+
+  private createWorker(index: number) {
+    const { workerPath, execArgv } = this.getWorkerConfig();
+    const worker = new Worker(workerPath, { execArgv });
+    this.workers[index] = worker;
+
+    worker.on("message", (message) => {
       const { id, vector, vectors, scores, error, memory } = message;
       const pending = this.pendingRequests.get(id);
 
-      if (pending) {
+      if (pending && pending.workerIndex === index) {
         if (pending.timeoutId) clearTimeout(pending.timeoutId);
 
         if (error) {
@@ -69,64 +84,93 @@ export class WorkerManager {
 
       if (memory && memory.rss > this.MAX_WORKER_RSS) {
         console.warn(
-          `Worker memory usage high (${Math.round(memory.rss / 1024 / 1024)}MB). Restarting...`,
+          `Worker ${index} memory usage high (${Math.round(memory.rss / 1024 / 1024)}MB). Restarting...`,
         );
-        void this.restartWorker("memory limit exceeded");
+        void this.restartWorker(index, "memory limit exceeded");
       }
     });
 
-    this.worker.on("error", (err) => {
-      console.error("Worker error:", err);
-      void this.restartWorker(`worker error: ${err.message}`);
+    worker.on("error", (err) => {
+      console.error(`Worker ${index} error:`, err);
+      void this.restartWorker(index, `worker error: ${err.message}`);
     });
 
-    this.worker.on("exit", (code) => {
+    worker.on("exit", (code) => {
       if (code !== 0 && !this.isClosing) {
-        console.error(`Worker exited with code ${code}`);
-        void this.restartWorker(`worker exit: code ${code}`);
+        console.error(`Worker ${index} exited with code ${code}`);
+        void this.restartWorker(index, `worker exit: code ${code}`);
       }
     });
   }
 
-  private rejectAllPending(error: Error) {
-    for (const pending of this.pendingRequests.values()) {
+  private rejectPendingForWorker(workerIndex: number, error: Error) {
+    for (const [id, pending] of this.pendingRequests.entries()) {
+      if (pending.workerIndex !== workerIndex) continue;
       if (pending.timeoutId) clearTimeout(pending.timeoutId);
       pending.reject(error);
+      this.pendingRequests.delete(id);
     }
-    this.pendingRequests.clear();
   }
 
-  private async restartWorker(reason?: string) {
-    if (this.restartInFlight) {
-      return this.restartInFlight;
+  private async restartWorker(workerIndex: number, reason?: string) {
+    const inFlight = this.restartInFlight.get(workerIndex);
+    if (inFlight) {
+      return inFlight;
     }
 
-    this.rejectAllPending(
+    this.rejectPendingForWorker(
+      workerIndex,
       new Error(`Worker restarting: ${reason || "unknown reason"}`),
     );
 
-    this.restartInFlight = (async () => {
+    const restartPromise = (async () => {
       try {
-        await this.worker.terminate();
+        const worker = this.workers[workerIndex];
+        if (worker) {
+          await worker.terminate();
+        }
       } catch (err) {
         console.error("Failed to terminate worker cleanly:", err);
       }
-      this.initializeWorker();
+      this.workers[workerIndex] = null;
+      this.createWorker(workerIndex);
       if (reason) {
-        console.warn(`Worker restarted due to ${reason}`);
+        console.warn(`Worker ${workerIndex} restarted due to ${reason}`);
       }
     })();
 
-    await this.restartInFlight;
-    this.restartInFlight = null;
+    this.restartInFlight.set(workerIndex, restartPromise);
+    await restartPromise;
+    this.restartInFlight.delete(workerIndex);
+  }
+
+  private async getNextWorker(): Promise<{ worker: Worker; index: number }> {
+    const total = this.workers.length;
+    if (total === 0) {
+      throw new Error("No workers available");
+    }
+
+    for (let i = 0; i < total; i++) {
+      const index = (this.nextWorkerIndex + i) % total;
+      const restartPromise = this.restartInFlight.get(index);
+      if (restartPromise) {
+        await restartPromise;
+      }
+
+      const worker = this.workers[index];
+      if (worker) {
+        this.nextWorkerIndex = (index + 1) % total;
+        return { worker, index };
+      }
+    }
+
+    throw new Error("No available workers");
   }
 
   private async sendToWorker<T>(
     buildPayload: (id: string) => WorkerRequest,
   ): Promise<T> {
-    if (this.restartInFlight) {
-      await this.restartInFlight;
-    }
+    const { worker, index } = await this.getNextWorker();
 
     return new Promise((resolve, reject) => {
       const id = uuidv4();
@@ -147,23 +191,10 @@ export class WorkerManager {
         reject: reject as (reason: unknown) => void,
         payload,
         timeoutId,
+        workerIndex: index,
       });
-      this.worker.postMessage(payload);
+      worker.postMessage(payload);
     });
-  }
-
-  private async enqueueEmbedding<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.embedQueue.then(async () => {
-      if (this.restartInFlight) {
-        await this.restartInFlight;
-      }
-      return fn();
-    }, fn);
-    this.embedQueue = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
   }
 
   async getEmbeddings(texts: string[]): Promise<number[][]> {
@@ -184,9 +215,10 @@ export class WorkerManager {
 
     if (neededTexts.length === 0) return results;
 
-    const computedVectors = await this.enqueueEmbedding(() =>
-      this.sendToWorker<number[][]>((id) => ({ id, texts: neededTexts })),
-    );
+    const computedVectors = await this.sendToWorker<number[][]>((id) => ({
+      id,
+      texts: neededTexts,
+    }));
 
     for (let i = 0; i < computedVectors.length; i++) {
       const originalIndex = neededIndices[i];
@@ -206,20 +238,29 @@ export class WorkerManager {
   }
 
   async rerank(query: string, documents: string[]): Promise<number[]> {
-    return this.enqueueEmbedding(() =>
-      this.sendToWorker<number[]>((id) => ({
-        id,
-        rerank: { query, documents },
-      })),
-    );
+    return this.sendToWorker<number[]>((id) => ({
+      id,
+      rerank: { query, documents },
+    }));
   }
 
   async close(): Promise<void> {
     this.isClosing = true;
     try {
-      this.worker.postMessage({ type: "shutdown" });
+      for (const worker of this.workers) {
+        worker?.postMessage({ type: "shutdown" });
+      }
       await new Promise((resolve) => setTimeout(resolve, 100));
-      await this.worker.terminate();
+      await Promise.all(
+        this.workers.map(async (worker) => {
+          if (!worker) return;
+          try {
+            await worker.terminate();
+          } catch {
+            // Silent cleanup
+          }
+        }),
+      );
     } catch (err) {
       // Silent cleanup
     }

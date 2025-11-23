@@ -101,7 +101,7 @@ async function createWatcher(
         const buffer = await fs.promises.readFile(filePath);
         if (buffer.length === 0) continue;
         const hash = computeBufferHash(buffer);
-        const didIndex = await indexFile(
+        const { records, indexed: didIndex } = await indexFile(
           store,
           storeId,
           filePath,
@@ -112,6 +112,9 @@ async function createWatcher(
           hash,
         );
         if (didIndex) {
+          if (records.length > 0) {
+            await store.insertBatch(storeId, records);
+          }
           metaStore.set(filePath, hash);
           await metaStore.save();
         }

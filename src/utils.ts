@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { extname } from "node:path";
 import pLimit from "p-limit";
 import type { FileSystem } from "./lib/file";
-import type { Store } from "./lib/store";
+import type { Store, VectorRecord } from "./lib/store";
 import type {
   InitialSyncProgress,
   InitialSyncResult,
@@ -81,6 +81,11 @@ interface IndexingProfile {
   processed: number;
   indexed: number;
 }
+
+type IndexFileResult = {
+  records: VectorRecord[];
+  indexed: boolean;
+};
 
 function now(): bigint {
   return process.hrtime.bigint();
@@ -257,7 +262,7 @@ export async function indexFile(
   preComputedBuffer?: Buffer,
   preComputedHash?: string,
   forceIndex?: boolean,
-): Promise<boolean> {
+): Promise<IndexFileResult> {
   const indexStart = PROFILE_ENABLED ? now() : null;
   let buffer: Buffer;
   let hash: string;
@@ -268,7 +273,7 @@ export async function indexFile(
   } else {
     buffer = await fs.promises.readFile(filePath);
     if (buffer.length === 0) {
-      return false;
+      return { records: [], indexed: false };
     }
     hash = computeBufferHash(buffer);
   }
@@ -278,7 +283,7 @@ export async function indexFile(
   if (!forceIndex && metaStore) {
     const cachedHash = metaStore.get(filePath);
     if (cachedHash === hash) {
-      return false;
+      return { records: [], indexed: false };
     }
   }
 
@@ -292,26 +297,31 @@ export async function indexFile(
     content: contentString,
   };
 
+  let records: VectorRecord[] = [];
+  let indexed = false;
+
   try {
-    await store.indexFile(storeId, contentString, options);
+    records = await store.indexFile(storeId, contentString, options);
+    indexed = true;
   } catch (_err) {
     // Fallback for weird encodings
-    await store.indexFile(
+    records = await store.indexFile(
       storeId,
       new File([new Uint8Array(buffer)], fileName, { type: "text/plain" }),
       options,
     );
+    indexed = true;
   }
 
-  if (metaStore) {
+  if (indexed && metaStore) {
     metaStore.set(filePath, hash);
   }
 
-  if (PROFILE_ENABLED && indexStart && profile) {
+  if (indexed && PROFILE_ENABLED && indexStart && profile) {
     profile.sections.index = (profile.sections.index ?? 0) + toMs(indexStart);
   }
 
-  return true;
+  return { records, indexed };
 }
 
 export async function initialSync(
@@ -433,6 +443,16 @@ export async function initialSync(
   const total = repoFiles.length;
   let processed = 0;
   let indexed = 0;
+  let writeBuffer: VectorRecord[] = [];
+
+  const flushWriteBuffer = async (force = false) => {
+    if (dryRun) return;
+    if (writeBuffer.length === 0) return;
+    if (!force && writeBuffer.length < 500) return;
+    const toWrite = writeBuffer;
+    writeBuffer = [];
+    await store.insertBatch(storeId, toWrite);
+  };
 
   if (PROFILE_ENABLED && profile) {
     profile.processed = total;
@@ -479,7 +499,7 @@ export async function initialSync(
             if (dryRun && shouldIndex) {
               indexed += 1;
             } else if (shouldIndex) {
-              const didIndex = await indexFile(
+              const { records, indexed: didIndex } = await indexFile(
                 store,
                 storeId,
                 filePath,
@@ -492,6 +512,9 @@ export async function initialSync(
               );
               if (didIndex) {
                 indexed += 1;
+                if (records.length > 0) {
+                  writeBuffer.push(...records);
+                }
 
                 // Periodic meta save
                 if (metaStore && !SKIP_META_SAVE && indexed % 25 === 0) {
@@ -517,6 +540,8 @@ export async function initialSync(
       ),
     );
 
+    await flushWriteBuffer();
+
     // Adjust concurrency based on batch performance.
     const batchDuration = Date.now() - batchStart;
     const timePerFile = batchDuration / batch.length;
@@ -538,6 +563,8 @@ export async function initialSync(
       currentConcurrency++;
     }
   }
+
+  await flushWriteBuffer(true);
 
   if (PROFILE_ENABLED && profile) {
     profile.processed = processed;
