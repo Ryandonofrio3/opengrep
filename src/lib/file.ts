@@ -3,6 +3,8 @@ import * as path from "node:path";
 import ignore from "ignore";
 import type { Git } from "./git";
 
+const DEFAULT_IGNORE_PATTERNS = ["**/node_modules/**"];
+
 /**
  * Configuration options for file system operations
  */
@@ -48,7 +50,10 @@ export class NodeFileSystem implements FileSystem {
     options: FileSystemOptions,
   ) {
     this.customIgnoreFilter = ignore();
-    this.customIgnoreFilter.add(options.ignorePatterns);
+    this.customIgnoreFilter.add([
+      ...DEFAULT_IGNORE_PATTERNS,
+      ...options.ignorePatterns,
+    ]);
   }
 
   /**
