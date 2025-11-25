@@ -397,6 +397,23 @@ export const search: Command = new CommanderCommand("search")
           return true;
         }
 
+        // 2. Rehydrate server results to match local store shape expected by formatSearchResults.
+        // Server payload is flat ({ path, content/snippet, score, chunk_type? }).
+        const rehydratedResults = (payload.results ?? []).map((r: any) => ({
+          score: typeof r.score === "number" ? r.score : 0,
+          text: r.content ?? r.snippet ?? "",
+          metadata: {
+            path: typeof r.path === "string" ? r.path : "Unknown path",
+            is_anchor: r.is_anchor === true,
+          },
+          generated_metadata: {
+            type: r.chunk_type,
+            start_line: typeof r.start_line === "number" ? r.start_line : 0,
+            num_lines:
+              typeof r.num_lines === "number" ? r.num_lines : undefined,
+          },
+        }));
+
         // 2. HANDLE TEXT MODE (Agent/Human)
         // Check for the status flag
         if (payload.status === "indexing") {
@@ -411,7 +428,7 @@ export const search: Command = new CommanderCommand("search")
         const shouldBePlain = options.plain || !isTTY;
 
         const output = formatSearchResults(
-          { data: payload.results } as any,
+          { data: rehydratedResults } as any,
           {
             showContent: options.c,
             perFile: parseInt(options.perFile, 10),

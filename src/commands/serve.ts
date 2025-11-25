@@ -41,7 +41,7 @@ function toDenseResults(
     score: number;
     text?: string | null;
     metadata?: Record<string, unknown>;
-    generated_metadata?: { start_line?: number | null };
+    generated_metadata?: { start_line?: number | null; type?: string | null };
   }>,
 ) {
   const root = path.resolve(storeRoot);
@@ -56,6 +56,7 @@ function toDenseResults(
       path: relPath,
       score: Number(item.score.toFixed(3)),
       content: snippet,
+      chunk_type: item.generated_metadata?.type ?? undefined,
     };
   });
 }
