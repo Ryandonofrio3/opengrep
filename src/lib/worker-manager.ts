@@ -54,6 +54,7 @@ export class WorkerManager {
           `Worker crashed (code ${code}). It will auto-restart on next request.`,
         );
         const error = new Error(`Worker exited with code ${code}`);
+        console.error("Worker exited unexpectedly. Pending requests will be rejected.");
         this.rejectAll(error);
       }
       // Clear reference so ensureWorker will spawn a new worker on demand.
@@ -116,6 +117,8 @@ export class WorkerManager {
           );
         }
       }, WORKER_TIMEOUT_MS);
+      // Ensure the timeout doesn't prevent the process from exiting if everything else is done
+      timeoutId.unref();
 
       this.pendingRequests.set(id, {
         resolve: resolve as (value: unknown) => void,

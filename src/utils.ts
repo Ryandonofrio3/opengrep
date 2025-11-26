@@ -301,7 +301,15 @@ export async function indexFile(
     buffer = preComputedBuffer;
     hash = preComputedHash;
   } else {
-    buffer = await fs.promises.readFile(filePath);
+    try {
+      buffer = await fs.promises.readFile(filePath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EISDIR") {
+        // It's a directory (likely a symlink to one), skip it
+        return { chunks: [], indexed: false };
+      }
+      throw err;
+    }
     if (buffer.length === 0) {
       return { chunks: [], indexed: false };
     }
@@ -523,7 +531,18 @@ export async function initialSync(
       batch.map((filePath) =>
         limit(async () => {
           try {
-            const buffer = await fs.promises.readFile(filePath);
+            let buffer: Buffer;
+            try {
+              buffer = await fs.promises.readFile(filePath);
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code === "EISDIR") {
+                // Skip directories/symlinks-to-directories silently
+                processed += 1; // Count as processed to match total
+                onProgress?.({ processed, indexed, total, filePath });
+                return;
+              }
+              throw err;
+            }
             const hashStart = PROFILE_ENABLED ? now() : null;
             const hash = computeBufferHash(buffer);
 
@@ -553,7 +572,8 @@ export async function initialSync(
             }
 
             onProgress?.({ processed, indexed, total, filePath });
-          } catch (_err) {
+          } catch (err) {
+            console.error(`Failed to process file ${filePath}:`, err);
             onProgress?.({ processed, indexed, total, filePath });
           }
         }),
@@ -645,7 +665,8 @@ export async function initialSync(
               total,
               filePath: candidate.filePath,
             });
-          } catch (_err) {
+          } catch (err) {
+            console.error(`Failed to index file ${candidate.filePath}:`, err);
             pendingIndexCount = Math.max(0, pendingIndexCount - 1);
             onProgress?.({
               processed,

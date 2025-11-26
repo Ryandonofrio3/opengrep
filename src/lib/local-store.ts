@@ -421,7 +421,12 @@ export class LocalStore implements Store {
 
     const table = await this.ensureTable(storeId);
     const writeStart = PROFILE_ENABLED ? process.hrtime.bigint() : null;
-    await table.add(sanitized);
+    try {
+      await table.add(sanitized);
+    } catch (err) {
+      console.error("Failed to insert batch into LanceDB:", err);
+      throw err;
+    }
     if (process.env.OSGREP_DEBUG_EMBED === "1") {
       try {
         const sample = await table.query().limit(1).toArray();
