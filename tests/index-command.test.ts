@@ -8,11 +8,11 @@ vi.mock("../src/lib/context", () => {
 });
 
 vi.mock("../src/lib/setup-helpers", () => ({
-  ensureSetup: vi.fn(async () => {}),
+  ensureSetup: vi.fn(async () => { }),
 }));
 
 vi.mock("../src/lib/store-helpers", () => ({
-  ensureStoreExists: vi.fn(async () => {}),
+  ensureStoreExists: vi.fn(async () => { }),
 }));
 
 vi.mock("../src/lib/store-resolver", () => ({
@@ -32,7 +32,7 @@ vi.mock("../src/lib/sync-helpers", () => ({
 }));
 
 vi.mock("../src/utils", () => ({
-  MetaStore: class {},
+  MetaStore: class { },
   initialSync: vi.fn(async () => ({
     processed: 1,
     indexed: 1,
@@ -43,14 +43,14 @@ vi.mock("../src/utils", () => ({
 const fakeFileSystem = {
   getFiles: () => [].values(),
   isIgnored: () => false,
-  loadOsgrepignore: () => {},
+  loadOsgrepignore: () => { },
 };
 
 const fakeStore = {
   retrieve: vi.fn(async () => ({})),
   create: vi.fn(async () => ({})),
   getInfo: vi.fn(async () => ({ counts: { pending: 0, in_progress: 0 } })),
-  close: vi.fn(async () => {}),
+  close: vi.fn(async () => { }),
 };
 
 import { index } from "../src/commands/index";
