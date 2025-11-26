@@ -9,16 +9,6 @@ const Language = TreeSitter.Language;
 
 const GRAMMARS_DIR = path.join(os.homedir(), ".osgrep", "grammars");
 
-const GRAMMAR_URLS: Record<string, string> = {
-  typescript:
-    "https://github.com/tree-sitter/tree-sitter-typescript/releases/latest/download/tree-sitter-typescript.wasm",
-  tsx: "https://github.com/tree-sitter/tree-sitter-typescript/releases/latest/download/tree-sitter-tsx.wasm",
-  python:
-    "https://github.com/tree-sitter/tree-sitter-python/releases/latest/download/tree-sitter-python.wasm",
-  go:
-    "https://github.com/tree-sitter/tree-sitter-go/releases/latest/download/tree-sitter-go.wasm",
-};
-
 export interface Chunk {
   content: string;
   startLine: number;
@@ -88,16 +78,10 @@ export class TreeSitterChunker {
 
     const wasmPath = path.join(GRAMMARS_DIR, `tree-sitter-${lang}.wasm`);
     if (!fs.existsSync(wasmPath)) {
-      const url = GRAMMAR_URLS[lang];
-      if (!url) return null;
-      try {
-        await this.downloadFile(url, wasmPath);
-      } catch (_err) {
-        console.warn(
-          `⚠️  Could not download ${lang} grammar (offline?). Using fallback chunking.`,
-        );
-        return null;
-      }
+      console.warn(
+        `⚠️  Missing grammar for ${lang}. Run 'osgrep setup' to download it. Using fallback chunking.`,
+      );
+      return null;
     }
 
     try {
@@ -109,13 +93,6 @@ export class TreeSitterChunker {
     } catch {
       return null;
     }
-  }
-
-  private async downloadFile(url: string, dest: string): Promise<void> {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`Failed to download ${url}`);
-    const arrayBuffer = await response.arrayBuffer();
-    fs.writeFileSync(dest, Buffer.from(arrayBuffer));
   }
 
   async chunk(filePath: string, content: string): Promise<Chunk[]> {

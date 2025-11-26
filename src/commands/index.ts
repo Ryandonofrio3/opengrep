@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { createFileSystem, createStore } from "../lib/context";
 import { DEFAULT_IGNORE_PATTERNS } from "../lib/ignore-patterns";
-import { ensureSetup } from "../lib/setup-helpers";
+import { ensureSetup, ensureGrammarsDownloaded } from "../lib/setup-helpers";
 import { ensureStoreExists } from "../lib/store-helpers";
 import { getAutoStoreId } from "../lib/store-resolver";
 import {
@@ -52,6 +52,8 @@ export const index = new Command("index")
         await metaStoreForReset.load();
         metaStoreForReset.deleteByPrefix(indexRoot);
         await metaStoreForReset.save();
+        console.log("Ensuring grammars are downloaded...");
+        await ensureGrammarsDownloaded();
         console.log("Existing index removed. Re-indexing...");
       }
 

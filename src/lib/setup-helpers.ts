@@ -80,3 +80,43 @@ export async function ensureSetup({
 
   return { ...paths, createdDirs, downloadedModels };
 }
+
+const GRAMMAR_URLS: Record<string, string> = {
+  typescript:
+    "https://github.com/tree-sitter/tree-sitter-typescript/releases/latest/download/tree-sitter-typescript.wasm",
+  tsx: "https://github.com/tree-sitter/tree-sitter-typescript/releases/latest/download/tree-sitter-tsx.wasm",
+  python:
+    "https://github.com/tree-sitter/tree-sitter-python/releases/latest/download/tree-sitter-python.wasm",
+  go: "https://github.com/tree-sitter/tree-sitter-go/releases/latest/download/tree-sitter-go.wasm",
+};
+
+/**
+ * Ensures all supported tree-sitter grammars are downloaded.
+ * Used during index --reset to restore grammars to a known good state.
+ */
+export async function ensureGrammarsDownloaded(): Promise<void> {
+  const paths = getPaths();
+  const grammarsDir = paths.grammars;
+
+  if (!fs.existsSync(grammarsDir)) {
+    fs.mkdirSync(grammarsDir, { recursive: true });
+  }
+
+  const downloadFile = async (url: string, dest: string): Promise<void> => {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Failed to download ${url}`);
+    const arrayBuffer = await response.arrayBuffer();
+    fs.writeFileSync(dest, Buffer.from(arrayBuffer));
+  };
+
+  for (const [lang, url] of Object.entries(GRAMMAR_URLS)) {
+    const wasmPath = path.join(grammarsDir, `tree-sitter-${lang}.wasm`);
+    if (!fs.existsSync(wasmPath)) {
+      try {
+        await downloadFile(url, wasmPath);
+      } catch (err) {
+        console.warn(`⚠️  Could not download ${lang} grammar: ${err}`);
+      }
+    }
+  }
+}
