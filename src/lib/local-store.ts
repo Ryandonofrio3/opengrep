@@ -108,11 +108,15 @@ export class LocalStore implements Store {
         : ArrayBuffer.isView(vector)
           ? Array.from(vector as unknown as ArrayLike<number>)
           : [];
-    const trimmed = source.slice(0, this.VECTOR_DIMENSIONS);
-    if (trimmed.length < this.VECTOR_DIMENSIONS) {
-      trimmed.push(...Array(this.VECTOR_DIMENSIONS - trimmed.length).fill(0));
+
+    // STRICT CHECK: Do not silently pad.
+    if (source.length !== this.VECTOR_DIMENSIONS) {
+      throw new Error(
+        `Vector dimension mismatch: expected ${this.VECTOR_DIMENSIONS}, got ${source.length}`,
+      );
     }
-    return trimmed;
+
+    return source;
   }
 
   private async ensureTable(storeId: string): Promise<lancedb.Table> {
@@ -742,7 +746,7 @@ export class LocalStore implements Store {
 
   async deleteFile(storeId: string, filePath: string): Promise<void> {
     const table = await this.getTable(storeId);
-    const safePath = filePath.replace(/'/g, "''");
+    const safePath = filePath.replace(/\\/g, "\\\\").replace(/'/g, "''");
     await table.delete(`path = '${safePath}'`);
   }
 
@@ -758,7 +762,9 @@ export class LocalStore implements Store {
     }
 
     for (const batch of chunks) {
-      const safe = batch.map((p) => `'${p.replace(/'/g, "''")}'`).join(",");
+      const safe = batch
+        .map((p) => `'${p.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`)
+        .join(",");
       await table.delete(`path IN (${safe})`);
     }
   }

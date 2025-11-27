@@ -70,7 +70,6 @@ osgrep "how is the database connection pooled?"
 | Flag | Description | Default |
 | --- | --- | --- |
 | `-m <n>` | Max total results to return. | `25` |
-| `--per-file <n>` | Max matches to show per file. | `1` |
 | `-c`, `--content` | Show full chunk content instead of snippets. | `false` |
 | `--compact` | Show file paths only (like `grep -l`). | `false` |
 | `-s`, `--sync` | Force re-index changed files before searching. | `false` |
@@ -82,16 +81,13 @@ osgrep "how is the database connection pooled?"
 # General concept search
 osgrep "API rate limiting logic"
 
-# Deep dive (show more matches per file)
-osgrep "error handling" --per-file 5
-
 # Just give me the files
 osgrep "user validation" --compact
 ```
 
 ### `osgrep index`
 
-Manually indexes the repository. Useful if you want to pre-warm the cache or if you've made massive changes outside of the editor.
+Manually indexes the repository. Useful if you want to pre-warm the cache or if you've made large changes outside of the editor.
 
 - Respects `.gitignore` and `.osgrepignore` (see [Configuration](#ignoring-files) section).
 - **Smart Indexing:** Only embeds code and config files. Skips binaries, lockfiles, and minified assets.

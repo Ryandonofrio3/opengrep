@@ -66,11 +66,6 @@ export const search: Command = new CommanderCommand("search")
     "10",
   )
   .option("-c, --content", "Show full chunk content instead of snippets", false)
-  .option(
-    "--per-file <n>",
-    "Number of matches to show per file",
-    "1",
-  )
   .option("--scores", "Show relevance scores", false)
   .option("--compact", "Show file paths only", false)
   .option("--plain", "Disable ANSI colors and use simpler formatting", false)

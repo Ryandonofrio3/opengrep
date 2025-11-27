@@ -328,6 +328,17 @@ export const serve = new Command("serve")
                   )
                   : root;
 
+              // PATH TRAVERSAL CHECK
+              const resolvedPath = path.resolve(searchPath);
+              const resolvedRoot = path.resolve(root);
+              if (!resolvedPath.startsWith(resolvedRoot)) {
+                // If they try to escape, clamp them to root or throw. 
+                // For safety, let's just clamp to root if invalid, or return 403.
+                // The user said "Ensure path.resolve stays inside root".
+                // Let's return 400/403 to be explicit.
+                return respondJson(res, 403, { error: "forbidden_path_outside_root" });
+              }
+
               const filters =
                 body.filters && typeof body.filters === "object"
                   ? body.filters
