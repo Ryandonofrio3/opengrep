@@ -1,4 +1,4 @@
-// src/config.ts
+import * as os from "node:os";
 export const MODEL_IDS = {
   embed: "onnx-community/granite-embedding-30m-english-ONNX",
   colbert: "ryandono/osgrep-colbert-q8",
@@ -16,6 +16,12 @@ export const WORKER_TIMEOUT_MS = Number.parseInt(
 );
 
 export const MAX_WORKER_MEMORY_MB = Number.parseInt(
-  process.env.OSGREP_MAX_WORKER_MEMORY_MB || "2000",
+  process.env.OSGREP_MAX_WORKER_MEMORY_MB ||
+  String(
+    Math.max(
+      2048,
+      Math.floor((os.totalmem() / 1024 / 1024) * 0.5), // 50% of system RAM
+    ),
+  ),
   10,
 );
