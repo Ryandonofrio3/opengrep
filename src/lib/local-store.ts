@@ -743,7 +743,9 @@ export class LocalStore implements Store {
           }
 
           if (docMatrix.length > 0) {
-            score = maxSim(queryMatrix, docMatrix);
+            const rawMaxSim = maxSim(queryMatrix, docMatrix);
+            // Normalize by query length to get average similarity per token
+            score = queryMatrix.length > 0 ? rawMaxSim / queryMatrix.length : rawMaxSim;
           }
         }
       }
@@ -753,12 +755,28 @@ export class LocalStore implements Store {
       return { record: doc, score };
     });
 
-    return {
-      data: reranked
-        .sort((a, b) => b.score - a.score)
-        .slice(0, finalLimit)
-        .map((x) => this.mapRecordToChunk(x.record, x.score)),
-    };
+    // Min-max normalization to [0, 1] range
+    if (reranked.length > 0) {
+      // Sort and slice to final limit
+      const sorted = reranked.sort((a, b) => b.score - a.score);
+
+      const maxScore = sorted[0].score;
+      const minScore = sorted[sorted.length - 1].score;
+      const scoreRange = maxScore - minScore;
+
+      const topResults = sorted.slice(0, finalLimit);
+
+      return {
+        data: topResults.map((x) => {
+          const normalizedScore = scoreRange > 0
+            ? (x.score - minScore) / scoreRange
+            : 1.0; // If all scores are equal, set to 1.0
+          return this.mapRecordToChunk(x.record, normalizedScore);
+        }),
+      };
+    }
+
+    return { data: [] };
   }
 
   async retrieve(storeId: string): Promise<unknown> {
