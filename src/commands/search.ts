@@ -167,6 +167,7 @@ export const search: Command = new CommanderCommand("search")
           isPlain: shouldBePlain,
           compact: options.compact,
           content: options.content,
+          scores: options.scores,
         });
         console.log(output);
         return true;
@@ -319,6 +320,7 @@ export const search: Command = new CommanderCommand("search")
         isPlain: shouldBePlain,
         compact: options.compact,
         content: options.content,
+        scores: options.scores,
       });
 
       console.log(output);
