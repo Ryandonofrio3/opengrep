@@ -3,7 +3,7 @@ import { CONFIG } from "../src/config";
 
 // Avoid spinning up heavy embedding workers during tests.
 const vectorDim = CONFIG.VECTOR_DIMENSIONS;
-vi.mock("../src/lib/worker-manager", () => {
+vi.mock("../src/lib/workers/worker-manager", () => {
   const makeDense = (len: number) => Array(len).fill(0);
   return {
     workerManager: {
@@ -18,7 +18,7 @@ vi.mock("../src/lib/worker-manager", () => {
         dense: makeDense(vectorDim),
         colbert: [],
       })),
-      close: vi.fn(async () => {}),
+      close: vi.fn(async () => { }),
     },
   };
 });

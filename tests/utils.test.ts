@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import type { FileSystem } from "../src/lib/file";
+import type { RepositoryScanner } from "../src/lib/index/scanner";
 import type {
   FileMetadata,
   IndexFileOptions,
@@ -12,8 +12,8 @@ import type {
   StoreFile,
   StoreInfo,
   VectorRecord,
-} from "../src/lib/store";
-import { initialSync } from "../src/utils";
+} from "../src/lib/store/store";
+import { initialSync } from "../src/lib/index/syncer";
 
 class MemoryMetaStore {
   private store = new Map<string, string>();
@@ -37,13 +37,13 @@ class MemoryMetaStore {
   }
 }
 
-class FakeFileSystem implements FileSystem {
+class FakeScanner implements RepositoryScanner {
   constructor(
     private readonly files: string[],
     private readonly ignored: Set<string> = new Set(),
-  ) {}
+  ) { }
 
-  *getFiles(_root: string): Generator<string> {
+  async *getFiles(_root: string): AsyncGenerator<string> {
     for (const file of this.files) {
       yield file;
     }
@@ -53,7 +53,14 @@ class FakeFileSystem implements FileSystem {
     return this.ignored.has(filePath);
   }
 
-  loadOsgrepignore(): void {}
+  loadOsgrepignore(): void { }
+
+  // Add missing properties required by RepositoryScanner class
+  isGitRepository(_dir: string): boolean { return false; }
+  getRepositoryRoot(_dir: string): string | null { return null; }
+  getRemoteUrl(_dir: string): string | null { return null; }
+  getGitIgnoreFilter(_dir: string): any { return null; }
+  getGitFiles(_dir: string): AsyncGenerator<string> { return (async function* () { })(); }
 }
 
 type StoredRecord = {
@@ -180,6 +187,13 @@ class FakeStore implements Store {
     }
   }
 
+  async deleteStore(_storeId: string): Promise<void> {
+    this.records.clear();
+    this.deleted = [];
+    this.ftsIndexCreated = false;
+    this.vectorIndexCreated = false;
+  }
+
   close(): Promise<void> {
     return Promise.resolve();
   }
@@ -217,15 +231,15 @@ describe("initialSync", () => {
       "assets/logo.bin": "binarydata",
     });
 
-    const fileSystem = new FakeFileSystem(filePaths);
+    const fileSystem = new FakeScanner(filePaths);
     const result = await initialSync(
       store,
-      fileSystem,
+      fileSystem as unknown as RepositoryScanner,
       "store",
       root,
       false,
       undefined,
-      metaStore,
+      metaStore as any,
     );
 
     expect(result.total).toBe(2);
@@ -242,10 +256,10 @@ describe("initialSync", () => {
       "index.ts": "const first = 1;",
     });
 
-    const fileSystem = new FakeFileSystem(filePaths);
+    const fileSystem = new FakeScanner(filePaths);
     await initialSync(
       store,
-      fileSystem,
+      fileSystem as unknown as RepositoryScanner,
       "store",
       root,
       false,
@@ -256,7 +270,7 @@ describe("initialSync", () => {
 
     const result = await initialSync(
       store,
-      fileSystem,
+      fileSystem as unknown as RepositoryScanner,
       "store",
       root,
       false,
@@ -275,10 +289,10 @@ describe("initialSync", () => {
       "empty.ts": "",
     });
 
-    const fileSystem = new FakeFileSystem(filePaths);
+    const fileSystem = new FakeScanner(filePaths);
     const result = await initialSync(
       store,
-      fileSystem,
+      fileSystem as unknown as RepositoryScanner,
       "store",
       root,
       false,
@@ -295,11 +309,11 @@ describe("initialSync", () => {
     const { root, filePaths } = await createTempRepo({
       "index.ts": "const value = 1;",
     });
-    const fileSystem = new FakeFileSystem(filePaths);
+    const fileSystem = new FakeScanner(filePaths);
 
     await initialSync(
       store,
-      fileSystem,
+      fileSystem as unknown as RepositoryScanner,
       "store",
       root,
       true,
@@ -316,11 +330,11 @@ describe("initialSync", () => {
     const { root, filePaths } = await createTempRepo({
       "index.ts": "const value = 1;",
     });
-    const fileSystem = new FakeFileSystem(filePaths);
+    const fileSystem = new FakeScanner(filePaths);
 
     await initialSync(
       store,
-      fileSystem,
+      fileSystem as unknown as RepositoryScanner,
       "store",
       root,
       false,
@@ -333,7 +347,7 @@ describe("initialSync", () => {
 
     const result = await initialSync(
       store,
-      fileSystem,
+      fileSystem as unknown as RepositoryScanner,
       "store",
       root,
       false,
@@ -354,10 +368,10 @@ describe("initialSync", () => {
       metadata: { path: path.join(root, "missing.ts"), hash: "old" },
     });
 
-    const fileSystem = new FakeFileSystem(filePaths);
+    const fileSystem = new FakeScanner(filePaths);
     const result = await initialSync(
       store,
-      fileSystem,
+      fileSystem as unknown as RepositoryScanner,
       "store",
       root,
       false,
@@ -377,11 +391,11 @@ describe("initialSync", () => {
     });
 
     const ignored = new Set<string>([path.join(root, "ignore.ts")]);
-    const fileSystem = new FakeFileSystem(filePaths, ignored);
+    const fileSystem = new FakeScanner(filePaths, ignored);
 
     const result = await initialSync(
       store,
-      fileSystem,
+      fileSystem as unknown as RepositoryScanner,
       "store",
       root,
       false,
@@ -420,7 +434,7 @@ describe("MetaStore persistence", () => {
       return { ...realOs, homedir: () => tempHome };
     });
 
-    const { MetaStore } = await import("../src/utils");
+    const { MetaStore } = await import("../src/lib/store/meta-store");
     const meta = new MetaStore();
     await meta.load();
     meta.set("/tmp/file.ts", "hash1");
@@ -438,7 +452,7 @@ describe("MetaStore persistence", () => {
       return { ...realOs, homedir: () => tempHome };
     });
 
-    const { MetaStore } = await import("../src/utils");
+    const { MetaStore } = await import("../src/lib/store/meta-store");
     const meta = new MetaStore();
     await meta.load();
 

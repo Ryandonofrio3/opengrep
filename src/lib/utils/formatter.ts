@@ -17,39 +17,12 @@ const style = {
   blue: (s: string) => `\x1b[34m${s}\x1b[39m`,
 };
 
+import { getLanguageByExtension } from "../core/languages";
+
 function detectLanguage(filePath: string): string {
-  const ext = path.extname(filePath).toLowerCase();
-  switch (ext) {
-    case ".ts":
-    case ".tsx":
-      return "typescript";
-    case ".js":
-    case ".jsx":
-      return "javascript";
-    case ".py":
-      return "python";
-    case ".rs":
-      return "rust";
-    case ".go":
-      return "go";
-    case ".java":
-      return "java";
-    case ".json":
-      return "json";
-    case ".md":
-      return "markdown";
-    case ".yml":
-    case ".yaml":
-      return "yaml";
-    case ".css":
-      return "css";
-    case ".html":
-      return "html";
-    case ".sh":
-      return "bash";
-    default:
-      return "plaintext";
-  }
+  const ext = path.extname(filePath);
+  const lang = getLanguageByExtension(ext);
+  return lang?.id || "plaintext";
 }
 
 function cleanSnippetLines(snippet: string): string[] {

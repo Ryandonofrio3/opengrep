@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
-import { createFileSystem } from "../src/lib/context";
+import { createFileSystem } from "../src/lib/core/context";
 
 const SERVE_IGNORE_PATTERNS = [
   "*.lock",

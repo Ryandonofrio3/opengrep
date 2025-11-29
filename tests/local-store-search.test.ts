@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import type { SearchResponse } from "../src/lib/store";
-import { LocalStore } from "../src/lib/local-store";
-import { workerManager } from "../src/lib/worker-manager";
+import type { SearchResponse } from "../src/lib/store/store";
+import { Searcher } from "../src/lib/search/searcher";
+import { workerManager } from "../src/lib/workers/worker-manager";
 
 type FakeTableRecord = {
   path: string;
@@ -67,25 +67,22 @@ async function runSearchWithFakeStore({
   filters?: Record<string, unknown>;
   topK?: number;
 }): Promise<SearchResponse> {
-  const fakeStore: any = {
-    queryPrefix: "prefix ",
-    getTable: vi.fn(async () => table),
-    batchExpandWithNeighbors: vi.fn(async (_table, records) => records),
-    mapRecordToChunk: LocalStore.prototype['mapRecordToChunk'],
-    applyStructureBoost: LocalStore.prototype['applyStructureBoost'],
+  const mockDb: any = {
+    ensureTable: vi.fn(async () => table),
   };
+
+  const searcher = new Searcher(mockDb);
 
   const encodeSpy = vi
     .spyOn(workerManager, "encodeQuery")
     .mockResolvedValue({
       dense: [1, 0, 0, 0],
       colbert: [],
+      colbertDim: 48,
     });
 
-  const searchFn = LocalStore.prototype.search;
   try {
-    return await searchFn.call(
-      fakeStore,
+    return await searcher.search(
       "store",
       "query",
       topK,
@@ -98,7 +95,7 @@ async function runSearchWithFakeStore({
 }
 
 // Unit-level fusion test: uses fake tables to exercise scoring without LanceDB
-describe("LocalStore.search fusion (unit)", () => {
+describe("Searcher.search fusion (unit)", () => {
   it("orders by dense similarity when ColBERT is absent", async () => {
     const table = buildTable({
       vectorResults: [

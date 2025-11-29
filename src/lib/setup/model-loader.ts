@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Worker } from "node:worker_threads";
-import { MODEL_IDS } from "../config";
+import { MODEL_IDS } from "../../config";
 
 const HOMEDIR = os.homedir();
 const CACHE_DIR = path.join(HOMEDIR, ".osgrep", "models");

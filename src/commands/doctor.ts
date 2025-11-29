@@ -2,19 +2,18 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Command } from "commander";
-import { MODEL_IDS } from "../config";
-import { gracefulExit } from "../lib/exit";
+import { MODEL_IDS, PATHS } from "../config";
+import { gracefulExit } from "../lib/utils/exit";
 
 export const doctor = new Command("doctor")
   .description("Check osgrep health and paths")
   .action(async () => {
     console.log("🏥 osgrep Doctor\n");
 
-    const home = os.homedir();
-    const root = path.join(home, ".osgrep");
-    const models = path.join(root, "models");
-    const data = path.join(root, "data");
-    const grammars = path.join(root, "grammars");
+    const root = PATHS.root;
+    const models = PATHS.models;
+    const data = PATHS.data;
+    const grammars = PATHS.grammars;
     const modelIds = [MODEL_IDS.embed, MODEL_IDS.colbert];
 
     const checkDir = (name: string, p: string) => {
@@ -50,7 +49,5 @@ export const doctor = new Command("doctor")
     );
     console.log("\nIf you see ✅ everywhere, you are ready to search!");
 
-    // Exit cleanly
-    // Exit cleanly
     await gracefulExit();
   });

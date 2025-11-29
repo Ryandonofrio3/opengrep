@@ -2,9 +2,9 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { FileSystem } from "../src/lib/file";
-import type { IndexFileOptions, Store } from "../src/lib/store";
-import { initialSync } from "../src/utils";
+import type { RepositoryScanner } from "../src/lib/index/scanner";
+import type { IndexFileOptions, Store } from "../src/lib/store/store";
+import { initialSync } from "../src/lib/index/syncer";
 
 class FakeStore implements Store {
   indexed: Array<{ storeId: string; externalId?: string }> = [];
@@ -19,15 +19,24 @@ class FakeStore implements Store {
 
   async indexFile(
     storeId: string,
-    _content: string | File,
+    _file: string | File | ReadableStream | NodeJS.ReadableStream,
     options: IndexFileOptions,
   ) {
     this.indexed.push({ storeId, externalId: options.external_id });
+    return [];
   }
+
+  async insertBatch(_storeId: string, _records: any[]) { }
 
   async deleteFile(_storeId: string, externalId: string) {
     this.deleted.push(externalId);
   }
+
+  async deleteFiles(_storeId: string, externalIds: string[]) {
+    this.deleted.push(...externalIds);
+  }
+
+  async deleteStore(_storeId: string) { }
 
   async search(
     _storeId: string,
@@ -35,15 +44,15 @@ class FakeStore implements Store {
     _top_k?: number,
     _search_options?: { rerank?: boolean },
   ) {
-    throw new Error("not implemented");
+    return { data: [] };
   }
 
   async retrieve(_storeId: string) {
-    throw new Error("not implemented");
+    return {};
   }
 
-  async create(_options) {
-    throw new Error("not implemented");
+  async create(_options: any) {
+    return {};
   }
 
   async ask(
@@ -52,11 +61,17 @@ class FakeStore implements Store {
     _top_k?: number,
     _search_options?: { rerank?: boolean },
   ) {
-    throw new Error("not implemented");
+    return { answer: "", sources: [] };
   }
 
   async getInfo(_storeId: string) {
-    throw new Error("not implemented");
+    return {
+      name: "test",
+      description: "test",
+      created_at: "",
+      updated_at: "",
+      counts: { pending: 0, in_progress: 0 },
+    };
   }
 
   async createFTSIndex(_storeId: string) {
@@ -72,16 +87,16 @@ class FakeStore implements Store {
     yield* [];
   }
 
-  async close() {}
+  async close() { }
 }
 
-class StubFileSystem implements FileSystem {
+class StubScanner {
   constructor(
     private files: string[],
     private ignored: Set<string> = new Set(),
-  ) {}
+  ) { }
 
-  *getFiles(_dirRoot: string): Generator<string> {
+  async *getFiles(_dirRoot: string): AsyncGenerator<string> {
     yield* this.files;
   }
 
@@ -89,7 +104,14 @@ class StubFileSystem implements FileSystem {
     return this.ignored.has(filePath);
   }
 
-  loadOsgrepignore(): void {}
+  loadOsgrepignore(): void { }
+
+  // Add missing properties required by RepositoryScanner class
+  isGitRepository(_dir: string): boolean { return false; }
+  getRepositoryRoot(_dir: string): string | null { return null; }
+  getRemoteUrl(_dir: string): string | null { return null; }
+  getGitIgnoreFilter(_dir: string): any { return null; }
+  getGitFiles(_dir: string): AsyncGenerator<string> { return (async function* () { })(); }
 }
 
 describe("initialSync edge cases", () => {
@@ -105,11 +127,11 @@ describe("initialSync edge cases", () => {
 
   it("handles an empty repository and store without indexing", async () => {
     const store = new FakeStore();
-    const fsStub = new StubFileSystem([]);
+    const fsStub = new StubScanner([]);
 
     const result = await initialSync(
       store,
-      fsStub,
+      fsStub as unknown as RepositoryScanner,
       "store",
       tempRoot,
       false,
@@ -127,11 +149,11 @@ describe("initialSync edge cases", () => {
     const ignoredFile = path.join(tempRoot, "ignored.ts");
     await fs.writeFile(ignoredFile, "content");
 
-    const fsStub = new StubFileSystem([ignoredFile], new Set([ignoredFile]));
+    const fsStub = new StubScanner([ignoredFile], new Set([ignoredFile]));
 
     const result = await initialSync(
       store,
-      fsStub,
+      fsStub as unknown as RepositoryScanner,
       "store",
       tempRoot,
       false,

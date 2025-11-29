@@ -1,23 +1,22 @@
 import { join, normalize } from "node:path";
 import type { Command } from "commander";
 import { Command as CommanderCommand } from "commander";
-import { createFileSystem, createStore } from "../lib/context";
-import { ensureSetup } from "../lib/setup-helpers";
-import type { FileMetadata, SearchResponse, Store } from "../lib/store";
-import { DEFAULT_IGNORE_PATTERNS } from "../lib/ignore-patterns";
-import { ensureStoreExists, isStoreEmpty } from "../lib/store-helpers";
-import { getAutoStoreId } from "../lib/store-resolver";
+import { createFileSystem, createStore } from "../lib/core/context";
+
+import { ensureSetup } from "../lib/setup/setup-helpers";
+import type { FileMetadata, SearchResponse, Store } from "../lib/store/store";
+import { DEFAULT_IGNORE_PATTERNS } from "../lib/index/ignore-patterns";
 import {
-  createIndexingSpinner,
-  formatDryRunSummary,
-} from "../lib/sync-helpers";
-import {
-  initialSync,
-  MetaStore,
-  readServerLock,
-} from "../utils";
-import { formatTextResults, type TextResult } from "../lib/formatter";
-import { gracefulExit } from "../lib/exit";
+  ensureStoreExists,
+  getAutoStoreId,
+  isStoreEmpty,
+} from "../lib/store/store-utils";
+import { createIndexingSpinner, formatDryRunSummary } from "../lib/index/sync-helpers";
+import { MetaStore } from "../lib/store/meta-store";
+import { readServerLock } from "../lib/utils/lockfile";
+import { formatTextResults, type TextResult } from "../lib/utils/formatter";
+import { gracefulExit } from "../lib/utils/exit";
+import { initialSync } from "../lib/index/syncer";
 
 
 

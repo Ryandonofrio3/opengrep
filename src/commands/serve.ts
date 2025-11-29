@@ -5,25 +5,26 @@ import * as os from "node:os";
 import { randomUUID } from "node:crypto";
 import { Command } from "commander";
 import chokidar, { type FSWatcher } from "chokidar";
-import { createFileSystem, createStore } from "../lib/context";
-import { ensureSetup } from "../lib/setup-helpers";
-import { ensureStoreExists, isStoreEmpty } from "../lib/store-helpers";
-import { getAutoStoreId } from "../lib/store-resolver";
-import type { Store } from "../lib/store";
-import { DEFAULT_IGNORE_PATTERNS } from "../lib/ignore-patterns"
+import { createFileSystem, createStore } from "../lib/core/context";
+import { ensureSetup } from "../lib/setup/setup-helpers";
+import { ensureStoreExists, isStoreEmpty } from "../lib/store/store-utils";
+import { getAutoStoreId } from "../lib/store/store-utils";
+
+import type { Store } from "../lib/store/store";
+import { DEFAULT_IGNORE_PATTERNS } from "../lib/index/ignore-patterns"
 import {
   clearServerLock,
-  computeBufferHash,
-  debounce,
-  formatDenseSnippet,
-  indexFile,
-  initialSync,
-  isIndexablePath,
-  MetaStore,
-  preparedChunksToVectors,
   readServerLock,
   writeServerLock,
-} from "../utils";
+} from "../lib/utils/lockfile";
+import {
+  computeBufferHash,
+  formatDenseSnippet,
+  isIndexablePath,
+} from "../lib/utils/file-utils";
+import { debounce } from "../lib/utils/debounce";
+import { MetaStore } from "../lib/store/meta-store";
+import { indexFile, initialSync, preparedChunksToVectors } from "../lib/index/syncer";
 
 type PendingAction = "upsert" | "delete";
 

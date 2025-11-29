@@ -1,9 +1,10 @@
 // Reduce worker pool fan-out during eval to avoid ONNX concurrency issues
 process.env.OSGREP_WORKER_COUNT ??= "1";
 
-import { LocalStore } from "./lib/local-store";
+import { LocalStore } from "./lib/store/local-store";
 
-import type { SearchResponse } from "./lib/store";
+import type { SearchResponse } from "./lib/store/store";
+import { getAutoStoreId } from "./lib/store/store-utils";
 
 export type EvalCase = {
   query: string;
@@ -198,12 +199,12 @@ export const cases: EvalCase[] = [
   },
   {
     query: "anchor chunk creation",
-    expectedPath: "src/lib/chunk-utils.ts",
+    expectedPath: "src/lib/chunker.ts",
     note: "buildAnchorChunk function.",
   },
   {
     query: "formatting chunk text",
-    expectedPath: "src/lib/chunk-utils.ts",
+    expectedPath: "src/lib/chunker.ts",
     note: "formatChunkText function.",
   },
   {
@@ -617,7 +618,7 @@ export const cases: EvalCase[] = [
   },
 ];
 
-import { getAutoStoreId } from "./lib/store-resolver";
+
 
 const storeId = process.argv[2] ?? getAutoStoreId(process.cwd());
 const topK = 20;

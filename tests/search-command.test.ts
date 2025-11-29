@@ -19,25 +19,22 @@ const mockFileSystem = {
   loadOsgrepignore: () => { },
 };
 
-vi.mock("../src/lib/context", () => ({
+vi.mock("../src/lib/core/context", () => ({
   createStore: vi.fn(async () => mockStore),
   createFileSystem: vi.fn(() => mockFileSystem),
 }));
 
-vi.mock("../src/lib/setup-helpers", () => ({
+vi.mock("../src/lib/setup/setup-helpers", () => ({
   ensureSetup: vi.fn(async () => { }),
 }));
 
-vi.mock("../src/lib/store-helpers", () => ({
+vi.mock("../src/lib/store/store-utils", () => ({
   ensureStoreExists: vi.fn(async () => { }),
   isStoreEmpty: vi.fn(async () => true),
-}));
-
-vi.mock("../src/lib/store-resolver", () => ({
   getAutoStoreId: vi.fn(() => "auto-store"),
 }));
 
-vi.mock("../src/lib/sync-helpers", () => ({
+vi.mock("../src/lib/index/sync-helpers", () => ({
   createIndexingSpinner: vi.fn(() => ({
     spinner,
     onProgress: vi.fn(),
@@ -45,24 +42,33 @@ vi.mock("../src/lib/sync-helpers", () => ({
   formatDryRunSummary: vi.fn(() => "dry-run-summary"),
 }));
 
-vi.mock("../src/utils", () => ({
+vi.mock("../src/lib/store/meta-store", () => ({
   MetaStore: class { },
+}));
+
+vi.mock("../src/lib/index/syncer", () => ({
   initialSync: vi.fn(async () => ({
     processed: 1,
     indexed: 1,
     total: 1,
   })),
+}));
+
+vi.mock("../src/lib/utils/lockfile", () => ({
   readServerLock: vi.fn(async () => null),
+}));
+
+vi.mock("../src/lib/utils/file-utils", () => ({
   formatDenseSnippet: vi.fn((t) => t),
 }));
 
-vi.mock("../src/lib/exit", () => ({
+vi.mock("../src/lib/utils/exit", () => ({
   gracefulExit: vi.fn(async () => { }),
 }));
 
 import { search } from "../src/commands/search";
-import { initialSync } from "../src/utils";
-import { isStoreEmpty } from "../src/lib/store-helpers";
+import { initialSync } from "../src/lib/index/syncer";
+import { isStoreEmpty } from "../src/lib/store/store-utils";
 
 describe("search command", () => {
   const originalCwd = process.cwd();

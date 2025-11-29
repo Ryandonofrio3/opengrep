@@ -25,3 +25,17 @@ export const MAX_WORKER_MEMORY_MB = Number.parseInt(
   ),
   10,
 );
+
+import * as path from "node:path";
+
+const HOME = os.homedir();
+const ROOT = path.join(HOME, ".osgrep");
+
+export const PATHS = {
+  root: ROOT,
+  models: path.join(ROOT, "models"),
+  data: path.join(ROOT, "data"),
+  grammars: path.join(ROOT, "grammars"),
+  meta: path.join(ROOT, "meta.json"),
+  serverLock: path.join(ROOT, "server.json"),
+};

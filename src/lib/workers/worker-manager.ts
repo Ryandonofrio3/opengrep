@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Worker } from "node:worker_threads";
 import { v4 as uuidv4 } from "uuid";
-import { MAX_WORKER_MEMORY_MB, WORKER_TIMEOUT_MS } from "../config";
+import { MAX_WORKER_MEMORY_MB, WORKER_TIMEOUT_MS } from "../../config";
 
 type WorkerRequest =
   | { id: string; hybrid: { texts: string[] } }

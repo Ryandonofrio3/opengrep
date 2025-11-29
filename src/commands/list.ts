@@ -1,8 +1,10 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
+
 import * as path from "node:path";
 import { Command } from "commander";
-import { gracefulExit } from "../lib/exit";
+import { PATHS } from "../config";
+import { gracefulExit } from "../lib/utils/exit";
+
 
 const style = {
   bold: (s: string) => `\x1b[1m${s}\x1b[22m`,
@@ -66,7 +68,7 @@ function getDirectorySize(dirPath: string): number {
 export const list = new Command("list")
   .description("List all osgrep stores and their metadata")
   .action(async () => {
-    const dataDir = path.join(os.homedir(), ".osgrep", "data");
+    const dataDir = PATHS.data;
 
     // Check if data directory exists
     if (!fs.existsSync(dataDir)) {

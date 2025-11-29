@@ -18,3 +18,4 @@ src/bench/generate-benchmark-chart.ts
 src/.env.local
 CLAUDE.md
 .DS_Store
+latest_review.md

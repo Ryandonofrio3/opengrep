@@ -1,18 +1,23 @@
 import { Command } from "commander";
-import { createFileSystem, createStore } from "../lib/context";
-import { DEFAULT_IGNORE_PATTERNS } from "../lib/ignore-patterns";
-import { ensureSetup } from "../lib/setup-helpers";
-import { ensureStoreExists } from "../lib/store-helpers";
-import { getAutoStoreId } from "../lib/store-resolver";
+import { createStore } from "../lib/core/context";
+import { DEFAULT_IGNORE_PATTERNS } from "../lib/index/ignore-patterns";
+import { ensureSetup } from "../lib/setup/setup-helpers";
+import {
+  ensureStoreExists,
+  getAutoStoreId,
+} from "../lib/store/store-utils";
 import {
   createIndexingSpinner,
   formatDryRunSummary,
-} from "../lib/sync-helpers";
-import type { Store } from "../lib/store";
-import { initialSync, MetaStore } from "../utils";
+} from "../lib/index/sync-helpers";
+import type { Store } from "../lib/store/store";
+import { MetaStore } from "../lib/store/meta-store";
 
-import { gracefulExit } from "../lib/exit";
-import { ensureGrammars } from "../lib/grammar-loader";
+import { initialSync } from "../lib/index/syncer";
+
+import { gracefulExit } from "../lib/utils/exit";
+import { ensureGrammars } from "../lib/index/grammar-loader";
+import { createFileSystem } from "../lib/core/context";
 
 const PROFILE_ENABLED =
   process.env.OSGREP_PROFILE === "1" || process.env.OSGREP_PROFILE === "true";
@@ -42,6 +47,7 @@ export const index = new Command("index")
     try {
       await ensureSetup();
       store = await createStore();
+      if (!store) throw new Error("Failed to create store");
 
       // Auto-detect store ID if not explicitly provided
       const indexRoot = options.path || process.cwd();
@@ -82,7 +88,7 @@ export const index = new Command("index")
           });
         }
         const result = await initialSync(
-          store,
+          store!,
           fileSystem,
           storeId,
           indexRoot,

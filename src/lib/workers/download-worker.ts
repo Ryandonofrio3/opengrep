@@ -1,9 +1,8 @@
-
 import { parentPort } from "node:worker_threads";
 import { env, pipeline } from "@huggingface/transformers";
 import * as path from "node:path";
 import * as os from "node:os";
-import { MODEL_IDS } from "../config";
+import { MODEL_IDS } from "../../config";
 
 // Configuration
 const HOMEDIR = os.homedir();
@@ -34,12 +33,12 @@ async function downloadModelWithTimeout(modelId: string, dtype: any) {
         });
 
         const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error(`Download timed out after ${TIMEOUT_MS}ms`)), TIMEOUT_MS);
+            setTimeout(() => reject(new Error(`Download timed out after ${TIMEOUT_MS} ms`)), TIMEOUT_MS);
         });
 
         return Promise.race([downloadPromise, timeoutPromise]);
     } catch (err) {
-        console.error(`Worker: pipeline creation failed for ${modelId}:`, err);
+        console.error(`Worker: pipeline creation failed for ${modelId}: `, err);
         throw err;
     }
 }

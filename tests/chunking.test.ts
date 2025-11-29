@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { TreeSitterChunker } from "../src/lib/chunker";
-import { buildAnchorChunk, formatChunkText } from "../src/lib/chunk-utils";
+import { TreeSitterChunker } from "../src/lib/index/chunker";
+import { buildAnchorChunk, formatChunkText } from "../src/lib/index/chunker";
 
 describe("TreeSitterChunker fallback and splitting", () => {
   it("splits large text into overlapping chunks with preserved ordering", async () => {
@@ -12,7 +12,7 @@ describe("TreeSitterChunker fallback and splitting", () => {
     const lines = Array.from({ length: 220 }, (_, i) => `line-${i + 1}`);
     const content = lines.join("\n");
 
-    const chunks = await chunker.chunk("file.ts", content);
+    const { chunks } = await chunker.chunk("file.ts", content);
 
     expect(chunks.length).toBeGreaterThan(2);
     expect(chunks[0].startLine).toBe(0);
@@ -30,7 +30,7 @@ describe("TreeSitterChunker fallback and splitting", () => {
     (chunker as any).parser = null;
 
     const content = "a".repeat(3500);
-    const chunks = await chunker.chunk("file.txt", content);
+    const { chunks } = await chunker.chunk("file.txt", content);
 
     expect(chunks.length).toBeGreaterThan(1);
     expect(chunks[0].content.length).toBeLessThanOrEqual(2000);
@@ -44,7 +44,11 @@ import fs from "fs";
 export const value = 1;
 function example() {}`;
 
-    const anchor = buildAnchorChunk("src/example.ts", content);
+    const anchor = buildAnchorChunk("src/example.ts", content, {
+      imports: ['fs'],
+      exports: ['value'],
+      comments: ['// top comment']
+    });
 
     expect(anchor.isAnchor).toBe(true);
     expect(anchor.context).toContain("Anchor");

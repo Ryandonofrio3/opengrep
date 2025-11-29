@@ -1,22 +1,43 @@
 import * as fs from "node:fs";
-
 import * as path from "node:path";
+import { GRAMMARS_DIR } from "./grammar-loader";
+import { getLanguageByExtension } from "../core/languages";
 
 // web-tree-sitter ships a CommonJS build
 const TreeSitter = require("web-tree-sitter");
 const Parser = TreeSitter.Parser;
 const Language = TreeSitter.Language;
 
-import { GRAMMARS_DIR } from "./grammar-loader";
-
-
-
 export interface Chunk {
   content: string;
   startLine: number;
   endLine: number;
-  type: "function" | "method" | "class" | "interface" | "type_alias" | "block" | "other";
+  type:
+  | "function"
+  | "method"
+  | "class"
+  | "interface"
+  | "type_alias"
+  | "block"
+  | "other";
   context?: string[];
+}
+
+export type ChunkWithContext = Chunk & {
+  context: string[];
+  chunkIndex?: number;
+  isAnchor?: boolean;
+};
+
+export interface FileMetadata {
+  imports: string[];
+  exports: string[];
+  comments: string[];
+}
+
+export interface ChunkingResult {
+  chunks: Chunk[];
+  metadata: FileMetadata;
 }
 
 // Minimal TreeSitter node interface
@@ -41,6 +62,80 @@ interface TreeSitterParser {
 
 type TreeSitterLanguage = Record<string, never>;
 
+export function formatChunkText(
+  chunk: ChunkWithContext,
+  filePath: string,
+): string {
+  const breadcrumb = [...chunk.context];
+  const fileLabel = `File: ${filePath || "unknown"}`;
+  const hasFileLabel = breadcrumb.some(
+    (entry) => typeof entry === "string" && entry.startsWith("File: "),
+  );
+  if (!hasFileLabel) {
+    breadcrumb.unshift(fileLabel);
+  }
+  const header = breadcrumb.length > 0 ? breadcrumb.join(" > ") : fileLabel;
+  return `${header}\n---\n${chunk.content}`;
+}
+
+export function buildAnchorChunk(
+  filePath: string,
+  content: string,
+  metadata: FileMetadata
+): Chunk & { context: string[]; chunkIndex: number; isAnchor: boolean } {
+  const lines = content.split("\n");
+
+  const preamble: string[] = [];
+  let nonBlank = 0;
+  let totalChars = 0;
+  let lastIncludedLineIdx = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+
+    preamble.push(line);
+    lastIncludedLineIdx = i;
+    nonBlank += 1;
+    totalChars += line.length;
+    if (nonBlank >= 30 || totalChars >= 1200) break;
+  }
+
+  const sections: string[] = [];
+  sections.push(`File: ${filePath}`);
+  if (metadata.imports.length > 0) {
+    sections.push(`Imports: ${metadata.imports.join(", ")}`);
+  }
+  if (metadata.exports.length > 0) {
+    sections.push(`Exports: ${metadata.exports.join(", ")}`);
+  }
+  if (metadata.comments.length > 0) {
+    sections.push(`Top comments:\n${metadata.comments.join("\n")}`);
+  }
+  if (preamble.length > 0) {
+    sections.push(`Preamble:\n${preamble.join("\n")}`);
+  }
+  sections.push("---");
+  sections.push("(anchor)");
+
+  const anchorText = sections.join("\n\n");
+  const approxEndLine = Math.min(
+    lines.length - 1,
+    Math.max(0, lastIncludedLineIdx),
+  );
+
+  return {
+    content: anchorText,
+    startLine: 0,
+    endLine: approxEndLine,
+    type: "block",
+    context: [`File: ${filePath}`, "Anchor"],
+    chunkIndex: -1,
+    isAnchor: true,
+  };
+}
+
 export class TreeSitterChunker {
   private parser: TreeSitterParser | null = null;
   private languages: Map<string, TreeSitterLanguage | null> = new Map();
@@ -50,8 +145,6 @@ export class TreeSitterChunker {
   private readonly MAX_CHUNK_LINES = 75;
   private readonly MAX_CHUNK_CHARS = 2000;
   private readonly OVERLAP_LINES = 10;
-
-  // For long single-line or low-newline regions (json, lockfiles, huge strings)
   private readonly OVERLAP_CHARS = 200;
 
   async init() {
@@ -97,55 +190,39 @@ export class TreeSitterChunker {
     }
   }
 
-  async chunk(filePath: string, content: string): Promise<Chunk[]> {
+  async chunk(filePath: string, content: string): Promise<ChunkingResult> {
     if (!this.initialized) await this.init();
 
-    let rawChunks: Chunk[] = [];
+    let result: ChunkingResult = { chunks: [], metadata: { imports: [], exports: [], comments: [] } };
 
     if (this.parser) {
       try {
-        rawChunks = await this.chunkWithTreeSitter(filePath, content);
+        result = await this.chunkWithTreeSitter(filePath, content);
       } catch {
-        rawChunks = [];
+        result.chunks = [];
       }
     }
 
-    if (rawChunks.length === 0) {
-      rawChunks = this.fallbackChunk(content, filePath);
+    if (result.chunks.length === 0) {
+      result.chunks = this.fallbackChunk(content, filePath);
     }
 
-    return rawChunks.flatMap((c) => this.splitIfTooBig(c));
+    // Split chunks if too big
+    result.chunks = result.chunks.flatMap((c) => this.splitIfTooBig(c));
+    return result;
   }
 
   private async chunkWithTreeSitter(
     filePath: string,
     content: string,
-  ): Promise<Chunk[]> {
-    const ext = path.extname(filePath).toLowerCase();
-    let lang = "";
-    const languageExtensions: { [key: string]: string } = {
-      ".ts": "typescript",
-      ".tsx": "tsx",
-      ".py": "python",
-      ".js": "tsx",
-      ".jsx": "tsx",
-      ".go": "go",
-      ".rs": "rust",
-      ".cpp": "cpp",
-      ".c": "c",
-      ".h": "c",
-      ".hpp": "cpp",
-      ".java": "java",
-      ".cs": "c_sharp",
-      ".rb": "ruby",
-      ".php": "php",
-      ".json": "json",
-    };
-    lang = languageExtensions[ext] || "";
-    if (!lang) return [];
+  ): Promise<ChunkingResult> {
+    const ext = path.extname(filePath);
+    const langDef = getLanguageByExtension(ext);
+    const lang = langDef?.grammar?.name || "";
+    if (!lang) return { chunks: [], metadata: { imports: [], exports: [], comments: [] } };
 
     const language = await this.getLanguage(lang);
-    if (!language || !this.parser) return [];
+    if (!language || !this.parser) return { chunks: [], metadata: { imports: [], exports: [], comments: [] } };
 
     this.parser.setLanguage(language);
     const tree = this.parser.parse(content);
@@ -158,63 +235,18 @@ export class TreeSitterChunker {
     let cursorRow = 0;
     let sawDefinition = false;
 
-    const isDefType = (t: string) => {
-      const common = [
-        "function_declaration",
-        "function_definition",
-        "method_definition",
-        "class_declaration",
-        "class_definition",
-        "interface_declaration",
-        "type_alias_declaration",
-      ];
-      const extras: Record<string, string[]> = {
-        go: ["function_declaration", "method_declaration", "type_declaration"],
-        rust: ["function_item", "impl_item", "trait_item", "struct_item", "enum_item"],
-        cpp: [
-          "function_definition",
-          "class_specifier",
-          "struct_specifier",
-          "enum_specifier",
-          "namespace_definition",
-        ],
-        c: ["function_definition", "struct_specifier", "enum_specifier"],
-        java: [
-          "method_declaration",
-          "class_declaration",
-          "interface_declaration",
-          "enum_declaration",
-        ],
-        c_sharp: [
-          "method_declaration",
-          "class_declaration",
-          "interface_declaration",
-          "enum_declaration",
-          "struct_declaration",
-          "namespace_declaration",
-        ],
-        ruby: ["method", "class", "module"],
-        php: [
-          "function_definition",
-          "method_declaration",
-          "class_declaration",
-          "interface_declaration",
-        ],
-        json: ["pair"],
-      };
+    const metadata: FileMetadata = { imports: [], exports: [], comments: [] };
+    const definitionTypes = langDef?.definitionTypes || [];
 
-      if (common.includes(t)) return true;
-      if (extras[lang] && extras[lang].includes(t)) return true;
-      return false;
-    };
+    const isDefType = (t: string) => definitionTypes.includes(t);
 
     const classify = (node: TreeSitterNode): Chunk["type"] => {
       const t = node.type;
       if (t.includes("method")) return "method";
       if (isDefType(t) || isTopLevelValueDef(node)) return "function";
-      if (t === "class_declaration" || t === "class_definition") return "class";
-      if (t === "interface_declaration") return "interface";
-      if (t === "type_alias_declaration") return "type_alias";
+      if (t.includes("class")) return "class";
+      if (t.includes("interface")) return "interface";
+      if (t.includes("type_alias")) return "type_alias";
       return "block";
     };
 
@@ -229,7 +261,6 @@ export class TreeSitterChunker {
       return node;
     };
 
-    // Treat lexical/variable declarations with function-like bodies as defs
     const isTopLevelValueDef = (node: TreeSitterNode): boolean => {
       const t = node.type;
       if (t !== "lexical_declaration" && t !== "variable_declaration")
@@ -241,7 +272,8 @@ export class TreeSitterChunker {
       if (text.includes("=>")) return true;
       if (text.includes("function ")) return true;
       if (text.includes("class ")) return true;
-      if (/(?:^|\n)\s*(?:export\s+)?const\s+[A-Z0-9_]+\s*=/.test(text)) return true;
+      if (/(?:^|\n)\s*(?:export\s+)?const\s+[A-Z0-9_]+\s*=/.test(text))
+        return true;
       return false;
     };
 
@@ -323,6 +355,18 @@ export class TreeSitterChunker {
     };
 
     const visit = (node: TreeSitterNode, stack: string[]) => {
+      // Metadata extraction
+      if (node.type === "import_statement" || node.type === "import_declaration") {
+        metadata.imports.push(node.text.trim());
+      } else if (node.type === "export_statement" || node.type === "export_declaration") {
+        // Simple export extraction
+        metadata.exports.push(node.text.trim().split('\n')[0]);
+      } else if (node.type.includes("comment")) {
+        if (node.startPosition.row < 10) { // Only top comments
+          metadata.comments.push(node.text.trim());
+        }
+      }
+
       const effective = unwrapExport(node);
       const isDefinition =
         isDefType(effective.type) || isTopLevelValueDef(effective);
@@ -379,12 +423,12 @@ export class TreeSitterChunker {
       }
     }
 
-    if (!sawDefinition) return [];
+    if (!sawDefinition) return { chunks: [], metadata };
 
     const combined = [...blockChunks, ...chunks].sort(
       (a, b) => a.startLine - b.startLine || a.endLine - b.endLine,
     );
-    return combined;
+    return { chunks: combined, metadata };
   }
 
   private splitIfTooBig(chunk: Chunk): Chunk[] {
@@ -399,29 +443,21 @@ export class TreeSitterChunker {
       return [chunk];
     }
 
-    // If huge but low-newline, split by chars
     if (charCount > this.MAX_CHUNK_CHARS && lineCount <= this.MAX_CHUNK_LINES) {
       return this.splitByChars(chunk);
     }
 
-    // Line-based sliding window split
     const subChunks: Chunk[] = [];
     const stride = Math.max(1, this.MAX_CHUNK_LINES - this.OVERLAP_LINES);
 
-    const header = this.extractHeaderLine(chunk.content);
-
+    // Simplified splitting logic
     for (let i = 0; i < lines.length; i += stride) {
       const end = Math.min(i + this.MAX_CHUNK_LINES, lines.length);
       const subLines = lines.slice(i, end);
       if (subLines.length < 3 && i > 0) continue;
 
-      let subContent = subLines.join("\n");
-      if (header && i > 0 && chunk.type !== "block") {
-        subContent = `${header}\n${subContent}`;
-      }
-
       subChunks.push({
-        content: subContent,
+        content: subLines.join("\n"),
         startLine: chunk.startLine + i,
         endLine: chunk.startLine + end,
         type: chunk.type,
@@ -429,7 +465,6 @@ export class TreeSitterChunker {
       });
     }
 
-    // Safety: char split any leftover giant subchunks
     return subChunks.flatMap((sc) =>
       sc.content.length > this.MAX_CHUNK_CHARS ? this.splitByChars(sc) : [sc],
     );
@@ -457,16 +492,6 @@ export class TreeSitterChunker {
     }
 
     return res;
-  }
-
-  private extractHeaderLine(text: string): string | null {
-    const lines = text.split("\n");
-    for (const l of lines) {
-      const t = l.trim();
-      if (t.length === 0) continue;
-      return t;
-    }
-    return null;
   }
 
   private fallbackChunk(content: string, filePath: string): Chunk[] {

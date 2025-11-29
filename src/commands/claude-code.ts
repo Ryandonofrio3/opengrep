@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { Command } from "commander";
-import { gracefulExit } from "../lib/exit";
+import { gracefulExit } from "../lib/utils/exit";
 
 function runClaudeCommand(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {

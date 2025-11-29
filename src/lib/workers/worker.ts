@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { parentPort } from "node:worker_threads";
 import { env, type PipelineType, pipeline } from "@huggingface/transformers";
-import { CONFIG, MODEL_IDS } from "../config";
+import { CONFIG, MODEL_IDS } from "../../config";
 
 function resolveThreadCount(): number {
   const fromEnv = Number.parseInt(process.env.OSGREP_THREADS ?? "", 10);
