@@ -102,6 +102,19 @@ export class LocalStore implements Store {
   }
 
   private normalizeVector(vector: unknown): number[] {
+    // Handle Arrow Vector objects from LanceDB
+    const vecWithToArray = vector as { toArray?: () => number[] | Float32Array };
+    if (vecWithToArray && typeof vecWithToArray.toArray === "function") {
+      const arr = vecWithToArray.toArray();
+      // Convert to plain array if it's a typed array
+      const plainArr = ArrayBuffer.isView(arr) ? Array.from(arr as ArrayLike<number>) : (arr as number[]);
+      const trimmed = plainArr.slice(0, this.VECTOR_DIMENSIONS);
+      if (trimmed.length < this.VECTOR_DIMENSIONS) {
+        trimmed.push(...Array(this.VECTOR_DIMENSIONS - trimmed.length).fill(0));
+      }
+      return trimmed;
+    }
+
     const source =
       Array.isArray(vector) && vector.every((v) => typeof v === "number")
         ? (vector as number[])
@@ -678,7 +691,7 @@ export class LocalStore implements Store {
     };
 
     const reranked = candidatesToRerank.map((doc) => {
-      const denseVec = Array.isArray(doc.vector) ? (doc.vector as number[]) : [];
+      const denseVec = this.normalizeVector(doc.vector);
       let score = cosineSim(queryVector, denseVec);
 
       if (
