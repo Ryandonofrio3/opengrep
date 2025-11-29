@@ -48,9 +48,14 @@ export class WorkerManager {
     worker.on("message", (message) => this.handleMessage(message));
     worker.on("error", (err) => {
       console.error("Worker error:", err);
-      // If the worker errors out, we should probably restart it or at least reject pending
-      // But let's rely on 'exit' to handle the cleanup/restart logic if it crashes.
-      // Just reject pending requests here.
+      // If the worker errors out, we MUST clean up the reference so the next request
+      // spawns a fresh worker. We also try to terminate the underlying process.
+      this.worker = null;
+      try {
+        worker.terminate();
+      } catch {
+        // Ignore termination errors
+      }
       this.rejectAll(err instanceof Error ? err : new Error(String(err)));
     });
     worker.on("exit", (code) => {
@@ -62,7 +67,10 @@ export class WorkerManager {
         // so the retry loop catches it.
         this.rejectAll(new Error(`Worker exited with code ${code}`));
       }
-      this.worker = null;
+      // Only clear if it matches our current worker (avoid race if we already spawned a new one)
+      if (this.worker === worker) {
+        this.worker = null;
+      }
     });
 
     return worker;

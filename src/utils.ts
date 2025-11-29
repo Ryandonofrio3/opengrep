@@ -462,7 +462,10 @@ export async function initialSync(
   const fileWalkStart = PROFILE_ENABLED ? now() : null;
 
   // Files on disk that are not gitignored.
-  const allFiles = Array.from(fileSystem.getFiles(repoRoot));
+  const allFiles: string[] = [];
+  for await (const file of fileSystem.getFiles(repoRoot)) {
+    allFiles.push(file);
+  }
   const aliveFiles = allFiles.filter(
     (filePath) => !fileSystem.isIgnored(filePath, repoRoot)
   );

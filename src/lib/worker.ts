@@ -149,21 +149,35 @@ class EmbeddingWorker {
 
   private toDenseVectors(output: EmbedOutput): number[][] {
     const dims = output.dims || [1, this.vectorDimensions];
+    const data = output.data;
 
     // Handle 3D output [batch, seq, dim] - usually from 'feature-extraction' with 'cls' pooling
     // but sometimes ONNX returns [batch, 1, dim] or similar.
+    if (dims.length === 3) {
+      const [batch, seqLen, dim] = dims;
+      const embeddings: number[][] = [];
+      for (let i = 0; i < batch; i++) {
+        // take first token (CLS) from each sequence
+        // The layout is [batch, seq, dim], so the start of the i-th batch item is i * seqLen * dim
+        const start = i * seqLen * dim;
+        // We only want the first vector of the sequence (CLS token)
+        const cls = data.slice(start, start + dim);
+
+        const vec = Array.from(cls as ArrayLike<number>).slice(0, this.vectorDimensions);
+        while (vec.length < this.vectorDimensions) vec.push(0);
+        embeddings.push(vec);
+      }
+      return embeddings;
+    }
+
+    // Fallback for 2D [batch, dim] or 1D [dim]
     let batchSize = 1;
     let hiddenSize = this.vectorDimensions;
 
-    if (dims.length === 3) {
-      batchSize = dims[0];
-      // dims[1] is sequence length (should be 1 for pooled output)
-      hiddenSize = dims[2];
-    } else if (dims.length === 2) {
+    if (dims.length === 2) {
       batchSize = dims[0];
       hiddenSize = dims[1];
     } else if (dims.length === 1) {
-      // Single vector
       hiddenSize = dims[0];
     }
 

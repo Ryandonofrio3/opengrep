@@ -7,7 +7,7 @@ import { GitIgnoreFilter } from "../src/lib/git";
 import type { Git } from "../src/lib/git";
 
 class FakeGit implements Git {
-  constructor(private readonly isRepo = false) {}
+  constructor(private readonly isRepo = false) { }
 
   isGitRepository(): boolean {
     return this.isRepo;
@@ -15,7 +15,7 @@ class FakeGit implements Git {
   getGitIgnoreContent(): string | null {
     return null;
   }
-  *getGitFiles(): Generator<string> {
+  async *getGitFiles(): AsyncGenerator<string> {
     yield* [];
   }
   getGitIgnoreFilter(): GitIgnoreFilter {
@@ -47,7 +47,10 @@ describe("NodeFileSystem", () => {
     await fs.writeFile(path.join(tempRoot, "visible.ts"), "visible");
 
     const fsImpl = new NodeFileSystem(new FakeGit(), { ignorePatterns: [] });
-    const files = Array.from(fsImpl.getFiles(tempRoot));
+    const files: string[] = [];
+    for await (const file of fsImpl.getFiles(tempRoot)) {
+      files.push(file);
+    }
 
     expect(files.some((f) => f.includes(".hidden"))).toBe(false);
     expect(files.some((f) => f.endsWith("visible.ts"))).toBe(true);
@@ -60,7 +63,9 @@ describe("NodeFileSystem", () => {
 
     const fsImpl = new NodeFileSystem(new FakeGit(), { ignorePatterns: [] });
     // Trigger .osgrepignore loading
-    Array.from(fsImpl.getFiles(tempRoot));
+    for await (const _ of fsImpl.getFiles(tempRoot)) {
+      // consume
+    }
     expect(fsImpl.isIgnored(path.join(tempRoot, "skip.ts"), tempRoot)).toBe(
       true,
     );

@@ -15,7 +15,7 @@ export interface Chunk {
   content: string;
   startLine: number;
   endLine: number;
-  type: "function" | "class" | "interface" | "type_alias" | "block" | "other";
+  type: "function" | "method" | "class" | "interface" | "type_alias" | "block" | "other";
   context?: string[];
 }
 
@@ -208,15 +208,14 @@ export class TreeSitterChunker {
       return false;
     };
 
-    const classify = (
-      node: TreeSitterNode,
-    ): "function" | "class" | "interface" | "type_alias" | "other" => {
+    const classify = (node: TreeSitterNode): Chunk["type"] => {
       const t = node.type;
-      if (t.includes("class")) return "class";
-      if (t.includes("interface")) return "interface";
-      if (t.includes("type_alias")) return "type_alias";
-      if (isDefType(t)) return "function";
-      return "other";
+      if (t.includes("method")) return "method";
+      if (isDefType(t) || isTopLevelValueDef(node)) return "function";
+      if (t === "class_declaration" || t === "class_definition") return "class";
+      if (t === "interface_declaration") return "interface";
+      if (t === "type_alias_declaration") return "type_alias";
+      return "block";
     };
 
     const unwrapExport = (node: TreeSitterNode): TreeSitterNode => {

@@ -9,7 +9,15 @@
  * * @param queryEmbeddings - Array of vectors [seq_len_q, dim]
  * @param docEmbeddings - Array of vectors [seq_len_d, dim]
  */
-export function maxSim(queryEmbeddings: number[][], docEmbeddings: number[][]): number {
+export function maxSim(
+  queryEmbeddings: number[][],
+  docEmbeddings: number[][],
+): number {
+  if (queryEmbeddings.length === 0 || docEmbeddings.length === 0) {
+    return 0;
+  }
+
+  // We assume normalized embeddings (dot product = cosine similarity)
   let totalScore = 0;
 
   // Iterate over every query token

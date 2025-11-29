@@ -127,10 +127,15 @@ export function buildAnchorChunk(
   const preamble: string[] = [];
   let nonBlank = 0;
   let totalChars = 0;
-  for (const line of lines) {
+  let lastIncludedLineIdx = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
+
     preamble.push(line);
+    lastIncludedLineIdx = i;
     nonBlank += 1;
     totalChars += line.length;
     if (nonBlank >= 30 || totalChars >= 1200) break;
@@ -154,10 +159,8 @@ export function buildAnchorChunk(
   sections.push("(anchor)");
 
   const anchorText = sections.join("\n\n");
-  const approxEndLine = Math.min(
-    lines.length,
-    Math.max(1, nonBlank || preamble.length || 5),
-  );
+  // Use the actual line index of the last included line
+  const approxEndLine = Math.min(lines.length - 1, Math.max(0, lastIncludedLineIdx));
 
   return {
     content: anchorText,

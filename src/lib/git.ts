@@ -81,7 +81,7 @@ export interface Git {
   /**
    * Gets all files tracked by git (both tracked and untracked but not ignored)
    */
-  getGitFiles(dirRoot: string): Generator<string>;
+  getGitFiles(dirRoot: string): AsyncGenerator<string>;
 
   /**
    * Gets or creates a cached GitIgnoreFilter for a repository
@@ -157,59 +157,42 @@ export class NodeGit implements Git {
 
   /**
    * Gets files using git ls-files when in a git repository
+   * Uses streaming to handle large repositories without buffering everything in memory
    */
-  *getGitFiles(dirRoot: string): Generator<string> {
-    try {
-      const run = (args: string[]) => {
-        const res = spawnSync("git", args, {
-          cwd: dirRoot,
-          encoding: "utf-8",
-          maxBuffer: 512 * 1024 * 1024, // Large buffer to avoid silent truncation
-        });
+  async *getGitFiles(dirRoot: string): AsyncGenerator<string> {
+    const { spawn } = await import("node:child_process");
 
-        const stderr = (res.stderr ?? "").toString();
+    const child = spawn("git", ["ls-files", "-z", "--others", "--exclude-standard", "--cached"], {
+      cwd: dirRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
-        if (res.error || res.status !== 0) {
-          const reason =
-            res.error?.message || stderr?.trim() || `exit code ${res.status}`;
-          console.error(
-            `Warning: git command failed: git ${args.join(" ")} (${reason})`,
-          );
-          return "";
-        }
+    child.stderr.on("data", (data) => {
+      // Log stderr but don't fail immediately, git might just be noisy
+      const msg = data.toString().trim();
+      if (msg) console.error(`[git] stderr: ${msg}`);
+    });
 
-        // git can technically succeed with empty stdout if something went wrong upstream,
-        // so surface stderr to aid debugging and allow callers to fall back.
-        if (!res.stdout && stderr) {
-          console.error(
-            `Warning: git command returned no output: git ${args.join(" ")} (${stderr.trim()})`,
-          );
-        }
-
-        return res.stdout as string;
-      };
-
-      const tracked = run(["ls-files", "-z"]).split("\u0000").filter(Boolean);
-
-      const untracked = run([
-        "ls-files",
-        "--others",
-        "--exclude-standard",
-        "-z",
-      ])
-        .split("\u0000")
-        .filter(Boolean);
-
-      const allRel = Array.from(new Set([...tracked, ...untracked]));
-      for (const rel of allRel) {
-        yield path.join(dirRoot, rel);
+    let buffer = "";
+    for await (const chunk of child.stdout) {
+      buffer += chunk.toString();
+      const parts = buffer.split("\u0000");
+      // The last part might be incomplete, save it for next chunk
+      buffer = parts.pop() || "";
+      for (const file of parts) {
+        if (file) yield path.join(dirRoot, file);
       }
-    } catch (error) {
-      console.error(
-        `Warning: Failed to get files from git in ${dirRoot}:`,
-        error,
-      );
     }
+
+    if (buffer) {
+      yield path.join(dirRoot, buffer);
+    }
+
+    // Wait for process to exit to ensure we catch any final errors
+    await new Promise<void>((resolve) => {
+      child.on("exit", () => resolve());
+      child.on("error", () => resolve()); // If spawn fails, we just finish
+    });
   }
 
   /**

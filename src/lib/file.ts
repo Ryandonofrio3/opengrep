@@ -20,7 +20,7 @@ export interface FileSystem {
   /**
    * Gets all files in a directory
    */
-  getFiles(dirRoot: string): Generator<string>;
+  getFiles(dirRoot: string): AsyncGenerator<string>;
 
   /**
    * Checks if a file should be ignored
@@ -65,9 +65,9 @@ export class NodeFileSystem implements FileSystem {
   /**
    * Gets all files recursively from a directory
    */
-  private *getAllFilesRecursive(dir: string, root: string): Generator<string> {
+  private async *getAllFilesRecursive(dir: string, root: string): AsyncGenerator<string> {
     try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      const entries = await fs.promises.readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
         const fullPath = path.join(dir, entry.name);
 
@@ -81,7 +81,7 @@ export class NodeFileSystem implements FileSystem {
             // It's a nested git repo! Switch to git ls-files for this subtree.
             // This ensures we respect its .gitignore file.
             let yielded = false;
-            for (const file of this.git.getGitFiles(fullPath)) {
+            for await (const file of this.git.getGitFiles(fullPath)) {
               yielded = true;
               yield file;
             }
@@ -103,11 +103,11 @@ export class NodeFileSystem implements FileSystem {
     }
   }
 
-  *getFiles(dirRoot: string): Generator<string> {
+  async *getFiles(dirRoot: string): AsyncGenerator<string> {
     this.loadOsgrepignore(dirRoot);
     if (this.git.isGitRepository(dirRoot)) {
       let yielded = false;
-      for (const file of this.git.getGitFiles(dirRoot)) {
+      for await (const file of this.git.getGitFiles(dirRoot)) {
         yielded = true;
         yield file;
       }
