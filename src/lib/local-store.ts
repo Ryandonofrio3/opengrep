@@ -610,12 +610,12 @@ export class LocalStore implements Store {
     // A. Search Code (High Priority - Get 300)
     const codeQuery = table.search(queryVector)
       .where(whereClause ? `${whereClause} AND ${codeClause}` : codeClause)
-      .limit(100);
+      .limit(300);
 
     // B. Search Docs (Low Priority - Get 50)
     const docQuery = table.search(queryVector)
       .where(whereClause ? `${whereClause} AND ${docClause}` : docClause)
-      .limit(100);
+      .limit(50); // XXX bug? mismatched comment and code for docQuery vs codeQuery return limits
 
     // C. FTS Search (Get 50)
     // Note: LanceDB FTS requires a string argument to search()
