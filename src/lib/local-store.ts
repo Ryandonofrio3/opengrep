@@ -102,6 +102,19 @@ export class LocalStore implements Store {
   }
 
   private normalizeVector(vector: unknown): number[] {
+    // Handle Arrow Vector objects from LanceDB
+    const vecWithToArray = vector as { toArray?: () => number[] | Float32Array };
+    if (vecWithToArray && typeof vecWithToArray.toArray === "function") {
+      const arr = vecWithToArray.toArray();
+      // Convert to plain array if it's a typed array
+      const plainArr = ArrayBuffer.isView(arr) ? Array.from(arr as ArrayLike<number>) : (arr as number[]);
+      const trimmed = plainArr.slice(0, this.VECTOR_DIMENSIONS);
+      if (trimmed.length < this.VECTOR_DIMENSIONS) {
+        trimmed.push(...Array(this.VECTOR_DIMENSIONS - trimmed.length).fill(0));
+      }
+      return trimmed;
+    }
+
     const source =
       Array.isArray(vector) && vector.every((v) => typeof v === "number")
         ? (vector as number[])
@@ -610,12 +623,12 @@ export class LocalStore implements Store {
     // A. Search Code (High Priority - Get 300)
     const codeQuery = table.search(queryVector)
       .where(whereClause ? `${whereClause} AND ${codeClause}` : codeClause)
-      .limit(100);
+      .limit(300);
 
     // B. Search Docs (Low Priority - Get 50)
     const docQuery = table.search(queryVector)
       .where(whereClause ? `${whereClause} AND ${docClause}` : docClause)
-      .limit(100);
+      .limit(50); // XXX bug? mismatched comment and code for docQuery vs codeQuery return limits
 
     // C. FTS Search (Get 50)
     // Note: LanceDB FTS requires a string argument to search()
@@ -678,7 +691,7 @@ export class LocalStore implements Store {
     };
 
     const reranked = candidatesToRerank.map((doc) => {
-      const denseVec = Array.isArray(doc.vector) ? (doc.vector as number[]) : [];
+      const denseVec = this.normalizeVector(doc.vector);
       let score = cosineSim(queryVector, denseVec);
 
       if (
@@ -690,9 +703,16 @@ export class LocalStore implements Store {
         const scale =
           typeof doc.colbert_scale === "number" ? doc.colbert_scale : 1.0;
         let int8: Int8Array | null = null;
+
+        // Handle different colbert data types from LanceDB
         if (Buffer.isBuffer(doc.colbert)) {
           const buffer = doc.colbert as Buffer;
           int8 = new Int8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        } else if (ArrayBuffer.isView(doc.colbert)) {
+          // Handle Uint8Array or other typed arrays from LanceDB
+          // These contain signed data (-127 to +127) stored as bytes, so we need to reinterpret
+          const uint8 = doc.colbert as Uint8Array;
+          int8 = new Int8Array(uint8.buffer, uint8.byteOffset, uint8.byteLength);
         } else if (Array.isArray(doc.colbert)) {
           int8 = new Int8Array(doc.colbert as number[]);
         }
@@ -723,7 +743,9 @@ export class LocalStore implements Store {
           }
 
           if (docMatrix.length > 0) {
-            score = maxSim(queryMatrix, docMatrix);
+            const rawMaxSim = maxSim(queryMatrix, docMatrix);
+            // Normalize by query length to get average similarity per token
+            score = queryMatrix.length > 0 ? rawMaxSim / queryMatrix.length : rawMaxSim;
           }
         }
       }
@@ -733,12 +755,28 @@ export class LocalStore implements Store {
       return { record: doc, score };
     });
 
-    return {
-      data: reranked
-        .sort((a, b) => b.score - a.score)
-        .slice(0, finalLimit)
-        .map((x) => this.mapRecordToChunk(x.record, x.score)),
-    };
+    // Min-max normalization to [0, 1] range
+    if (reranked.length > 0) {
+      // Sort and slice to final limit
+      const sorted = reranked.sort((a, b) => b.score - a.score);
+
+      const maxScore = sorted[0].score;
+      const minScore = sorted[sorted.length - 1].score;
+      const scoreRange = maxScore - minScore;
+
+      const topResults = sorted.slice(0, finalLimit);
+
+      return {
+        data: topResults.map((x) => {
+          const normalizedScore = scoreRange > 0
+            ? (x.score - minScore) / scoreRange
+            : 1.0; // If all scores are equal, set to 1.0
+          return this.mapRecordToChunk(x.record, normalizedScore);
+        }),
+      };
+    }
+
+    return { data: [] };
   }
 
   async retrieve(storeId: string): Promise<unknown> {

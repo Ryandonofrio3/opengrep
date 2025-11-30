@@ -73,6 +73,7 @@ async function runSearchWithFakeStore({
     batchExpandWithNeighbors: vi.fn(async (_table, records) => records),
     mapRecordToChunk: LocalStore.prototype['mapRecordToChunk'],
     applyStructureBoost: LocalStore.prototype['applyStructureBoost'],
+    normalizeVector: LocalStore.prototype['normalizeVector'],
   };
 
   const encodeSpy = vi
