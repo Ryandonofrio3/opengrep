@@ -537,9 +537,8 @@ export class LocalStore implements Store {
     const pathStr =
       typeof record.path === "string" ? record.path.toLowerCase() : "";
     if (
-      pathStr.includes(".test.") ||
-      pathStr.includes(".spec.") ||
-      pathStr.includes("__tests__")
+      pathStr.includes("test") ||
+      pathStr.includes("spec")
     ) {
       adjusted *= 0.85;
     }
