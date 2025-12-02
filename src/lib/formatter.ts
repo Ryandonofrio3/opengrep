@@ -94,6 +94,7 @@ export function formatTextResults(
     isPlain: boolean;
     compact?: boolean;
     content?: boolean;
+    scores?: boolean;
   },
 ): string {
   if (results.length === 0) return `osgrep: No results found for "${query}".`;
@@ -142,7 +143,8 @@ export function formatTextResults(
           ]
           : lines;
 
-      output += `${relPath}:${line}${tagStr}\n`;
+      const scoreStr = options.scores ? ` (${item.score.toFixed(2)})` : "";
+      output += `${relPath}:${line}${scoreStr}${tagStr}\n`;
       truncated.forEach((ln) => {
         output += `  ${ln}\n`;
       });
@@ -209,7 +211,8 @@ export function formatTextResults(
         // fall back to non-highlighted text
       }
 
-      output += `${rank}) 📂 ${style.green(relPath)}${style.dim(`:${line}`)}${tagStr}\n`;
+      const scoreStr = options.scores ? ` ${style.dim(`(${item.score.toFixed(2)})`)}` : "";
+      output += `${rank}) 📂 ${style.green(relPath)}${style.dim(`:${line}`)}${scoreStr}${tagStr}\n`;
       const numbered = rendered.split("\n").map((ln, idx) => {
         const num = style.dim(`${line + idx}`.padStart(4));
         return `${num} │ ${ln}`;
