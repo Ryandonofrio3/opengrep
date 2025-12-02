@@ -840,3 +840,91 @@ export async function clearServerLock(
     }
   }
 }
+
+// Central Server Registry
+// Tracks all running osgrep servers across different directories
+
+const SERVERS_REGISTRY_FILE = path.join(os.homedir(), ".osgrep", "servers.json");
+
+export interface ServerEntry {
+  cwd: string;
+  port: number;
+  pid: number;
+  authToken?: string;
+}
+
+interface ServersRegistry {
+  servers: ServerEntry[];
+}
+
+async function readRegistry(): Promise<ServersRegistry> {
+  try {
+    const content = await fs.promises.readFile(SERVERS_REGISTRY_FILE, "utf-8");
+    const data = JSON.parse(content);
+    if (data && Array.isArray(data.servers)) {
+      return data as ServersRegistry;
+    }
+  } catch (_err) {
+    // Missing or malformed registry file -> treat as empty
+  }
+  return { servers: [] };
+}
+
+async function writeRegistry(registry: ServersRegistry): Promise<void> {
+  const dir = path.dirname(SERVERS_REGISTRY_FILE);
+  await fs.promises.mkdir(dir, { recursive: true });
+  const tmpFile = `${SERVERS_REGISTRY_FILE}.tmp`;
+  try {
+    await fs.promises.writeFile(
+      tmpFile,
+      JSON.stringify(registry, null, 2),
+      { encoding: "utf-8", mode: 0o600 },
+    );
+    await fs.promises.rename(tmpFile, SERVERS_REGISTRY_FILE);
+  } catch (err) {
+    // Clean up tmp file if rename failed
+    try {
+      await fs.promises.unlink(tmpFile);
+    } catch {
+      // Ignore cleanup errors
+    }
+    throw err;
+  }
+}
+
+export async function registerServer(entry: ServerEntry): Promise<void> {
+  const registry = await readRegistry();
+  // Remove any existing entry for this cwd
+  registry.servers = registry.servers.filter((s) => s.cwd !== entry.cwd);
+  registry.servers.push(entry);
+  await writeRegistry(registry);
+}
+
+export async function unregisterServer(cwd: string): Promise<void> {
+  try {
+    const registry = await readRegistry();
+    registry.servers = registry.servers.filter((s) => s.cwd !== cwd);
+    await writeRegistry(registry);
+  } catch (err) {
+    // Ignore errors - registry may be in inconsistent state due to race conditions
+    // This is acceptable as the registry is a best-effort tracking mechanism
+  }
+}
+
+export async function listAllServers(): Promise<ServerEntry[]> {
+  const registry = await readRegistry();
+  return registry.servers;
+}
+
+export async function clearAllServers(): Promise<void> {
+  await writeRegistry({ servers: [] });
+}
+
+export function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
