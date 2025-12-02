@@ -72,6 +72,8 @@ osgrep "how is the database connection pooled?"
 | `-m <n>` | Max total results to return. | `25` |
 | `--per-file <n>` | Max matches to show per file. | `1` |
 | `-c`, `--content` | Show full chunk content instead of snippets. | `false` |
+| `--scores` | Show relevance scores (0-1) for each result. | `false` |
+| `--min-score <n>` | Filter out results below this score threshold. | `0` |
 | `--compact` | Show file paths only (like `grep -l`). | `false` |
 | `-s`, `--sync` | Force re-index changed files before searching. | `false` |
 | `-r`, `--reset` | Reset the index and re-index from scratch. | `false` |
@@ -87,6 +89,9 @@ osgrep "error handling" --per-file 5
 
 # Just give me the files
 osgrep "user validation" --compact
+
+# Show relevance scores and filter low-confidence matches
+osgrep "authentication" --scores --min-score 0.5
 ```
 
 ### `osgrep index`
