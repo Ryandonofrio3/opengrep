@@ -47,6 +47,7 @@ export class VectorDB {
             vector: Array(this.VECTOR_DIMENSIONS).fill(0),
             colbert: Buffer.alloc(0),
             colbert_scale: 1,
+            pooled_colbert_48d: Array(CONFIG.COLBERT_DIM).fill(0),
         };
     }
 
@@ -60,6 +61,20 @@ export class VectorDB {
         const trimmed = source.slice(0, this.VECTOR_DIMENSIONS);
         if (trimmed.length < this.VECTOR_DIMENSIONS) {
             trimmed.push(...Array(this.VECTOR_DIMENSIONS - trimmed.length).fill(0));
+        }
+        return trimmed;
+    }
+
+    private normalizePooledVector(vector: unknown): number[] {
+        const source =
+            Array.isArray(vector) && vector.every((v) => typeof v === "number")
+                ? (vector as number[])
+                : ArrayBuffer.isView(vector)
+                    ? Array.from(vector as unknown as ArrayLike<number>)
+                    : [];
+        const trimmed = source.slice(0, CONFIG.COLBERT_DIM);
+        if (trimmed.length < CONFIG.COLBERT_DIM) {
+            trimmed.push(...Array(CONFIG.COLBERT_DIM - trimmed.length).fill(0));
         }
         return trimmed;
     }
@@ -88,6 +103,14 @@ export class VectorDB {
             new Field("chunk_type", new Utf8(), true),
             new Field("colbert", new Binary(), true),
             new Field("colbert_scale", new Float64(), true),
+            new Field(
+                "pooled_colbert_48d",
+                new FixedSizeList(
+                    CONFIG.COLBERT_DIM,
+                    new Field("item", new Float32(), false),
+                ),
+                true,
+            ),
         ]);
 
         try {
@@ -115,13 +138,24 @@ export class VectorDB {
     async insertBatch(storeId: string, records: VectorRecord[]): Promise<void> {
         if (records.length === 0) return;
 
+        const table = await this.ensureTable(storeId);
+        const schemaFields =
+            Array.isArray((table as any).schema?.fields) && (table as any).schema.fields.length > 0
+                ? (table as any).schema.fields
+                : [];
+        const supportsPooled = schemaFields.some(
+            (f: any) => f?.name === "pooled_colbert_48d",
+        );
+
         const sanitizeRecord = (rec: VectorRecord): VectorRecord => {
             const vecArray =
                 typeof rec.vector?.toString === "function" && !Array.isArray(rec.vector)
                     ? Array.from(rec.vector as ArrayLike<number>)
                     : Array.isArray(rec.vector)
                         ? (rec.vector as number[])
-                        : [];
+                        : ArrayBuffer.isView(rec.vector)
+                            ? Array.from(rec.vector as ArrayLike<number>)
+                            : [];
             const normalizedVector = this.normalizeVector(vecArray);
 
             const colBuffer = Buffer.isBuffer(rec.colbert)
@@ -134,17 +168,27 @@ export class VectorDB {
                         )
                         : Buffer.alloc(0);
 
-            return {
+            const base: VectorRecord = {
                 ...rec,
                 vector: Array.from(normalizedVector),
                 colbert: Buffer.from(new Uint8Array(colBuffer)),
                 colbert_scale:
                     typeof rec.colbert_scale === "number" ? rec.colbert_scale : 1,
             };
+
+            if (supportsPooled) {
+                return {
+                    ...base,
+                    pooled_colbert_48d: this.normalizePooledVector(
+                        (rec as Record<string, unknown>).pooled_colbert_48d,
+                    ),
+                };
+            }
+
+            return base;
         };
 
         const sanitized = records.map(sanitizeRecord);
-        const table = await this.ensureTable(storeId);
         await table.add(sanitized);
     }
 

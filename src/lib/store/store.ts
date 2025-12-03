@@ -18,9 +18,10 @@ export type PreparedChunk = {
 };
 
 export type VectorRecord = PreparedChunk & {
-  vector: number[];
-  colbert: Buffer;
+  vector: number[] | Float32Array;
+  colbert: Buffer | Int8Array | Uint8Array | number[];
   colbert_scale: number;
+  pooled_colbert_48d?: number[] | Float32Array;
 } & Record<string, unknown>;
 
 type MetadataRecord = Record<string, MetadataValue>;

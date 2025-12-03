@@ -32,6 +32,26 @@ function buildTable({
   const normalizedFtsResults = (ftsResults ?? []).map(normalizeRecord);
   const table = {
     countRows: vi.fn(async () => rowCount),
+    vectorSearch: vi.fn((_query: unknown) => {
+      let filterClause: string | null = null;
+      const queryWrapper: any = {
+        limit: vi.fn(() => queryWrapper),
+        where: vi.fn((clause: string) => {
+          whereClauses.push(clause);
+          filterClause = clause;
+          return queryWrapper;
+        }),
+        toArray: async () => {
+          if (!filterClause) return normalizedVectorResults;
+          const match = /path\s+like\s+'(.+)%'/i.exec(filterClause);
+          const prefix = match?.[1] ?? "";
+          return normalizedVectorResults.filter((r) =>
+            (r.path ?? "").startsWith(prefix),
+          );
+        },
+      };
+      return queryWrapper;
+    }),
     search: vi.fn((query: unknown) => {
       let filterClause: string | null = null;
       const resultSet =

@@ -4,8 +4,34 @@ import { PATHS } from "../../config";
 
 const META_FILE = PATHS.meta;
 
+export type MetaEntry = {
+    hash: string;
+    mtimeMs: number;
+    size: number;
+};
+
+type RawMetaEntry = string | Partial<MetaEntry>;
+
+function normalizeEntry(value: RawMetaEntry): MetaEntry {
+    if (typeof value === "string") {
+        return { hash: value, mtimeMs: 0, size: 0 };
+    }
+
+    const hash = typeof value.hash === "string" ? value.hash : "";
+    const mtimeMs =
+        typeof value.mtimeMs === "number" && Number.isFinite(value.mtimeMs)
+            ? value.mtimeMs
+            : 0;
+    const size =
+        typeof value.size === "number" && Number.isFinite(value.size)
+            ? value.size
+            : 0;
+
+    return { hash, mtimeMs, size };
+}
+
 export class MetaStore {
-    private data: Record<string, string> = {};
+    private data: Record<string, MetaEntry> = {};
     private loaded = false;
     private saveQueue: Promise<void> = Promise.resolve();
 
@@ -18,14 +44,24 @@ export class MetaStore {
         };
 
         try {
-            this.data = await loadFile(META_FILE);
+            const raw = await loadFile(META_FILE);
+            this.data = Object.fromEntries(
+                Object.entries(raw as Record<string, RawMetaEntry>).map(
+                    ([filePath, value]) => [filePath, normalizeEntry(value)],
+                ),
+            );
         } catch (err) {
             // Try to recover from tmp file if main file is missing or corrupt
             const tmpFile = `${META_FILE}.tmp`;
             try {
                 if (fs.existsSync(tmpFile)) {
                     console.warn("[MetaStore] Main meta file corrupt/missing, recovering from tmp...");
-                    this.data = await loadFile(tmpFile);
+                    const raw = await loadFile(tmpFile);
+                    this.data = Object.fromEntries(
+                        Object.entries(raw as Record<string, RawMetaEntry>).map(
+                            ([filePath, value]) => [filePath, normalizeEntry(value)],
+                        ),
+                    );
                     // Restore the main file
                     await fs.promises.copyFile(tmpFile, META_FILE);
                 } else {
@@ -59,12 +95,12 @@ export class MetaStore {
         return this.saveQueue;
     }
 
-    get(filePath: string): string | undefined {
+    get(filePath: string): MetaEntry | undefined {
         return this.data[filePath];
     }
 
-    set(filePath: string, hash: string) {
-        this.data[filePath] = hash;
+    set(filePath: string, entry: MetaEntry) {
+        this.data[filePath] = entry;
     }
 
     delete(filePath: string) {

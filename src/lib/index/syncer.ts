@@ -13,7 +13,7 @@ import type {
     InitialSyncResult,
 } from "./sync-helpers";
 import { workerManager } from "../workers/worker-manager";
-import { MetaStore } from "../store/meta-store";
+import { MetaStore, type MetaEntry } from "../store/meta-store";
 import { computeBufferHash, isIndexableFile } from "../utils/file-utils";
 
 // Re-export these for convenience if needed by other modules, 
@@ -40,6 +40,9 @@ export interface IndexingProfile {
 type IndexCandidate = {
     filePath: string;
     hash: string;
+    mtimeMs: number;
+    size: number;
+    buffer?: Buffer;
 };
 
 export type IndexFileResult = {
@@ -161,6 +164,7 @@ export async function initialSync(
     let pendingIndexCount = 0;
     let writeBuffer: VectorRecord[] = [];
     const embedQueue: PreparedChunk[] = [];
+    const candidateMeta = new Map<string, MetaEntry>();
 
     const flushWriteBuffer = async (force = false) => {
         if (dryRun) return;
@@ -173,14 +177,18 @@ export async function initialSync(
 
         // CHECKPOINTING FIX: Update meta store only after successful write
         if (metaStore) {
-            const uniquePaths = new Set(toWrite.map(r => r.path as string));
+            const uniquePaths = new Set(toWrite.map((r) => r.path as string));
             for (const p of uniquePaths) {
-                // We need the hash. Since we don't have it handy in a map here easily without looking up,
-                // we can rely on the fact that 'toWrite' contains the records.
-                // Optimization: Create a map of path -> hash from the batch
-                const record = toWrite.find(r => r.path === p);
-                if (record && record.hash) {
-                    metaStore.set(p, record.hash as string);
+                const meta = candidateMeta.get(p);
+                const record = toWrite.find((r) => r.path === p);
+                if (record && record.hash && meta) {
+                    metaStore.set(p, meta);
+                } else if (record && record.hash) {
+                    metaStore.set(p, {
+                        hash: record.hash as string,
+                        mtimeMs: 0,
+                        size: 0,
+                    });
                 }
             }
         }
@@ -196,6 +204,7 @@ export async function initialSync(
             embedQueue.length = 0;
             return;
         }
+        embedQueue.sort((a, b) => a.content.length - b.content.length);
         while (
             embedQueue.length >= EMBED_BATCH_SIZE ||
             (force && embedQueue.length > 0)
@@ -233,7 +242,29 @@ export async function initialSync(
         await Promise.all(
             batch.map((filePath) =>
                 limit(async () => {
+                    let counted = false;
                     try {
+                        const stats = await fs.promises.stat(filePath);
+                        const mtimeMs = stats.mtimeMs;
+                        const size = stats.size;
+                        const metaEntry = metaStore?.get(filePath);
+                        const existingHash =
+                            (metaEntry && metaEntry.hash) || storeHashes.get(filePath);
+                        const metaMatches =
+                            !storeIsEmpty &&
+                            !!metaEntry &&
+                            metaEntry.mtimeMs === mtimeMs &&
+                            metaEntry.size === size &&
+                            !!metaEntry.hash;
+
+                        processed += 1;
+                        counted = true;
+
+                        if (metaMatches) {
+                            onProgress?.({ processed, indexed, total, filePath });
+                            return;
+                        }
+
                         const buffer = await fs.promises.readFile(filePath);
                         const hashStart = PROFILE_ENABLED ? now() : null;
                         const hash = computeBufferHash(buffer);
@@ -243,14 +274,6 @@ export async function initialSync(
                                 (profile.sections.hash ?? 0) + toMs(hashStart);
                         }
 
-                        let existingHash: string | undefined;
-                        if (metaStore) {
-                            existingHash = metaStore.get(filePath);
-                        } else {
-                            existingHash = storeHashes.get(filePath);
-                        }
-
-                        processed += 1;
                         const shouldIndex =
                             storeIsEmpty || !existingHash || existingHash !== hash;
 
@@ -258,13 +281,15 @@ export async function initialSync(
                             if (dryRun) {
                                 indexed += 1;
                             } else {
-                                candidates.push({ filePath, hash });
+                                candidates.push({ filePath, hash, mtimeMs, size, buffer });
+                                candidateMeta.set(filePath, { hash, mtimeMs, size });
                             }
                             pendingIndexCount += 1;
                         }
 
                         onProgress?.({ processed, indexed, total, filePath });
                     } catch (_err) {
+                        if (!counted) processed += 1;
                         onProgress?.({ processed, indexed, total, filePath });
                     }
                 }),
@@ -315,7 +340,9 @@ export async function initialSync(
                     limit(async () => {
                         if (signal?.aborted) return;
                         try {
-                            const buffer = await fs.promises.readFile(candidate.filePath);
+                            const buffer =
+                                candidate.buffer ??
+                                (await fs.promises.readFile(candidate.filePath));
                             const { chunks, indexed: didIndex } = await indexFile(
                                 store,
                                 storeId,
@@ -327,6 +354,7 @@ export async function initialSync(
                                 candidate.hash,
                                 storeIsEmpty,
                             );
+                            candidate.buffer = undefined;
                             pendingIndexCount = Math.max(0, pendingIndexCount - 1);
                             if (didIndex) {
                                 indexed += 1;
@@ -459,7 +487,7 @@ export async function indexFile(
     const contentString = buffer.toString("utf-8");
 
     if (!forceIndex && metaStore) {
-        const cachedHash = metaStore.get(filePath);
+        const cachedHash = metaStore.get(filePath)?.hash;
         if (cachedHash === hash) {
             return { chunks: [], indexed: false };
         }
@@ -512,12 +540,56 @@ export async function preparedChunksToVectors(
         chunks.map((chunk) => chunk.content),
     );
     return chunks.map((chunk, idx) => {
-        const hybrid = hybrids[idx] ?? { dense: [], colbert: Buffer.alloc(0), scale: 1 };
+        const hybrid = hybrids[idx] ?? {
+            dense: new Float32Array(),
+            colbert: new Int8Array(),
+            scale: 1,
+        };
+        const denseSource = (hybrid as { dense?: unknown }).dense;
+        const denseVector =
+            ArrayBuffer.isView(denseSource) && denseSource instanceof Float32Array
+                ? denseSource
+                : Array.isArray(denseSource)
+                    ? new Float32Array(denseSource)
+                    : ArrayBuffer.isView(denseSource)
+                        ? (() => {
+                            const view = denseSource as ArrayBufferView;
+                            const arr =
+                                "length" in view
+                                    ? Array.from(view as unknown as ArrayLike<number>)
+                                    : Array.from(new Uint8Array(view.buffer));
+                            return new Float32Array(arr);
+                        })()
+                        : new Float32Array();
+
+        const colbertSource = (hybrid as { colbert?: unknown }).colbert;
+        const colbertVector =
+            Buffer.isBuffer(colbertSource)
+                ? colbertSource
+                : ArrayBuffer.isView(colbertSource)
+                    ? new Int8Array(
+                        (colbertSource as ArrayBufferView).buffer,
+                        (colbertSource as ArrayBufferView).byteOffset,
+                        (colbertSource as ArrayBufferView).byteLength,
+                    )
+                    : Array.isArray(colbertSource)
+                        ? new Int8Array(colbertSource)
+                        : new Int8Array();
+
+        const pooled = (hybrid as { pooled_colbert_48d?: Float32Array | number[] }).pooled_colbert_48d;
         return {
             ...chunk,
-            vector: hybrid.dense,
-            colbert: hybrid.colbert,
+            vector: denseVector,
+            colbert: colbertVector,
             colbert_scale: hybrid.scale,
+            ...(pooled
+                ? {
+                    pooled_colbert_48d:
+                        pooled instanceof Float32Array
+                            ? pooled
+                            : new Float32Array(pooled ?? []),
+                }
+                : {}),
         };
     });
 }

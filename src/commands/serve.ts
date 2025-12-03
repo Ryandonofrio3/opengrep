@@ -114,6 +114,7 @@ async function createWatcher(
       }
 
       try {
+        const stats = await fs.promises.stat(filePath);
         const buffer = await fs.promises.readFile(filePath);
         if (buffer.length === 0) continue;
         const hash = computeBufferHash(buffer);
@@ -132,7 +133,11 @@ async function createWatcher(
             const vectors = await preparedChunksToVectors(chunks);
             await store.insertBatch(storeId, vectors);
           }
-          metaStore.set(filePath, hash);
+          metaStore.set(filePath, {
+            hash,
+            mtimeMs: stats.mtimeMs,
+            size: stats.size,
+          });
           await metaStore.save();
         }
       } catch (err) {

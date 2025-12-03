@@ -16,7 +16,7 @@ import type {
 import { initialSync } from "../src/lib/index/syncer";
 
 class MemoryMetaStore {
-  private store = new Map<string, string>();
+  private store = new Map<string, { hash: string; mtimeMs: number; size: number }>();
   loadCalls = 0;
   saveCalls = 0;
 
@@ -26,11 +26,16 @@ class MemoryMetaStore {
   async save(): Promise<void> {
     this.saveCalls += 1;
   }
-  get(filePath: string): string | undefined {
+  get(filePath: string):
+    | { hash: string; mtimeMs: number; size: number }
+    | undefined {
     return this.store.get(filePath);
   }
-  set(filePath: string, hash: string) {
-    this.store.set(filePath, hash);
+  set(
+    filePath: string,
+    entry: { hash: string; mtimeMs: number; size: number },
+  ) {
+    this.store.set(filePath, entry);
   }
   delete(filePath: string) {
     this.store.delete(filePath);
@@ -248,7 +253,7 @@ describe("initialSync", () => {
     expect(store.records.has(path.join(root, "src/b.txt"))).toBe(true);
     expect(store.records.has(path.join(root, "assets/logo.bin"))).toBe(false);
     expect(store.ftsIndexCreated).toBe(true);
-    expect(store.vectorIndexCreated).toBe(true);
+    expect(store.vectorIndexCreated).toBe(false);
   });
 
   it("skips unchanged files when meta hashes match", async () => {
@@ -281,7 +286,7 @@ describe("initialSync", () => {
     expect(result.indexed).toBe(0);
     expect(store.indexCalls).toBe(firstIndexCalls);
     expect(store.ftsIndexCreated).toBe(true);
-    expect(store.vectorIndexCreated).toBe(true);
+    expect(store.vectorIndexCreated).toBe(false);
   });
 
   it("skips zero-byte files from indexing", async () => {
@@ -437,13 +442,17 @@ describe("MetaStore persistence", () => {
     const { MetaStore } = await import("../src/lib/store/meta-store");
     const meta = new MetaStore();
     await meta.load();
-    meta.set("/tmp/file.ts", "hash1");
+    meta.set("/tmp/file.ts", { hash: "hash1", mtimeMs: 0, size: 0 });
     await meta.save();
 
     const fresh = new MetaStore();
     await fresh.load();
 
-    expect(fresh.get("/tmp/file.ts")).toBe("hash1");
+    expect(fresh.get("/tmp/file.ts")).toEqual({
+      hash: "hash1",
+      mtimeMs: 0,
+      size: 0,
+    });
   });
 
   it("handles missing meta file gracefully", async () => {
