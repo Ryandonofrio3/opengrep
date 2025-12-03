@@ -274,7 +274,9 @@ export class WorkerManager {
           );
           reject(err);
           // If it timed out, the worker is likely stuck. Kill it.
-          this.recycleWorker("Request timeout");
+          this.recycleWorker("Request timeout", id).catch((err) =>
+            console.warn("[WorkerManager] Failed to recycle worker on timeout:", err),
+          );
         }
       }, timeoutMs);
 

@@ -1230,7 +1230,9 @@ export async function verifyOsgrepServer(
 ): Promise<boolean> {
   if (!authToken) {
     // Without an auth token, we can't verify - fall back to unsafe behavior
-    // but log a warning
+    console.warn(
+      `[osgrep] Cannot verify server on port ${port}: authToken is missing`,
+    );
     return false;
   }
 
