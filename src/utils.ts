@@ -545,6 +545,8 @@ export async function initialSync(
     storeIsEmpty = true;
   }
 
+  logVerbose(`[sync] DB scan: ${initialDbCount} files in store, storeIsEmpty=${storeIsEmpty}`);
+
   if (PROFILE_ENABLED && storeScanStart && profile) {
     profile.sections.storeScan =
       (profile.sections.storeScan ?? 0) + toMs(storeScanStart);
@@ -618,6 +620,7 @@ export async function initialSync(
 
     try {
       await store.insertBatch(storeId, toWrite);
+      logVerbose(`[db] Batch write successful (${toWrite.length} records)`);
     } catch (err) {
       // If a batch fails to insert, log the error and skip these records.
       // This prevents one problematic file from crashing the entire indexing process.
@@ -735,12 +738,23 @@ export async function initialSync(
     );
   }
 
+  // Log summary after scanning
+  const skippedCount = total - candidates.length;
+  if (skippedCount > 0) {
+    logVerbose(
+      `[scan] ${candidates.length} file(s) need indexing, ${skippedCount} unchanged (skipped)`,
+    );
+  }
+
   // Single delete for stale + changed paths
   if (!dryRun) {
     const deleteTargets = Array.from(
       new Set([...stalePaths, ...candidates.map((c) => c.filePath)]),
     );
     if (deleteTargets.length > 0) {
+      logVerbose(
+        `[sync] Deleting ${deleteTargets.length} file(s) from DB (stale=${stalePaths.length}, reindex=${candidates.length})`,
+      );
       const staleStart = PROFILE_ENABLED ? now() : null;
       await store.deleteFiles(storeId, deleteTargets);
       if (PROFILE_ENABLED && staleStart && profile) {
@@ -783,10 +797,14 @@ export async function initialSync(
             hash: c.hash,
             start_line: c.start_line,
             end_line: c.end_line,
+            chunk_index: c.chunk_index,
+            is_anchor: c.is_anchor,  // CRITICAL: needed for listFiles query
+            context_prev: c.context_prev,
+            context_next: c.context_next,
+            chunk_type: c.chunk_type,
             vector: e.dense,
             colbert: e.colbert,
             colbert_scale: e.scale,
-            chunk_type: c.chunk_type, // "anchor" | "code"
           });
         }
         await flushWriteBuffer(false);
@@ -827,6 +845,7 @@ export async function initialSync(
         processed,
         indexed,
         total,
+        candidates: candidates.length,
         phase: "indexing",
       });
     }
@@ -909,6 +928,7 @@ export async function initialSync(
                 processed,
                 indexed,
                 total,
+                candidates: candidates.length,
                 filePath: candidate.filePath,
                 phase: "indexing",
               });
@@ -926,6 +946,7 @@ export async function initialSync(
                   processed,
                   indexed,
                   total,
+                  candidates: candidates.length,
                   filePath: candidate.filePath,
                   phase: "indexing",
                   error: `Timed out after ${FILE_INDEX_TIMEOUT_MS}ms`,
@@ -937,6 +958,7 @@ export async function initialSync(
                 processed,
                 indexed,
                 total,
+                candidates: candidates.length,
                 filePath: candidate.filePath,
                 phase: "indexing",
                 error: err instanceof Error ? err.message : "Unknown error",

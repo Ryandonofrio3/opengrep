@@ -14,6 +14,8 @@ export interface InitialSyncProgress {
   processed: number;
   indexed: number;
   total: number;
+  /** Number of files that need re-indexing (changed or new) */
+  candidates?: number;
   filePath?: string;
   phase?: "scanning" | "indexing";
   error?: string;
@@ -79,9 +81,15 @@ export function createIndexingSpinner(
 
       const suffix = rel ? ` ${rel}` : "";
       const phaseLabel = info.phase === "scanning" ? "Scanning" : "Indexing";
+      // During scanning: show processed/total
+      // During indexing: show indexed/candidates (how many need re-indexing)
       const progressCount =
         info.phase === "scanning" ? info.processed : info.indexed;
-      spinner.text = `${phaseLabel} files (${progressCount}/${info.total})${suffix}`;
+      const denominator =
+        info.phase === "scanning"
+          ? info.total
+          : info.candidates ?? info.total;
+      spinner.text = `${phaseLabel} files (${progressCount}/${denominator})${suffix}`;
     },
   };
 }

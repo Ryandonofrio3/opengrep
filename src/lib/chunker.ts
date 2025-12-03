@@ -246,7 +246,11 @@ export class TreeSitterChunker {
           "extension_declaration",
           "mixin_declaration",
           "type_alias",
-          "function_signature",
+          "function_signature",     // Abstract methods
+          "method_signature",       // Interface methods  
+          "constructor_signature",  // Constructor signatures
+          "getter_signature",       // Getter signatures
+          "setter_signature",       // Setter signatures
         ],
       };
 
