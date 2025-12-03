@@ -79,7 +79,9 @@ export function createIndexingSpinner(
 
       const suffix = rel ? ` ${rel}` : "";
       const phaseLabel = info.phase === "scanning" ? "Scanning" : "Indexing";
-      spinner.text = `${phaseLabel} files (${info.indexed}/${info.total})${suffix}`;
+      const progressCount =
+        info.phase === "scanning" ? info.processed : info.indexed;
+      spinner.text = `${phaseLabel} files (${progressCount}/${info.total})${suffix}`;
     },
   };
 }

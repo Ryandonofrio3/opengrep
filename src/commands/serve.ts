@@ -13,7 +13,6 @@ import type { Store } from "../lib/store";
 import { DEFAULT_IGNORE_PATTERNS } from "../lib/ignore-patterns"
 import { spawn } from "node:child_process";
 import {
-  clearAllServers,
   clearServerLock,
   computeBufferHash,
   debounce,
@@ -184,6 +183,7 @@ async function respondJson(
 }
 
 const DEFAULT_PORT = 4444;
+const MAX_PORT_RETRIES = 10;
 
 /** Returns next available port by incrementing from highest registered server port. */
 async function getNextAvailablePort(): Promise<number> {
@@ -193,6 +193,51 @@ async function getNextAvailablePort(): Promise<number> {
   }
   const maxPort = Math.max(...servers.map((s) => s.port));
   return maxPort + 1;
+}
+
+/**
+ * Attempts to bind a server to a port, retrying with incremented ports on EADDRINUSE.
+ * Only retries if port was auto-assigned (not explicitly specified by user).
+ */
+function listenWithRetry(
+  server: http.Server,
+  initialPort: number,
+  isAutoAssigned: boolean,
+  onSuccess: (port: number) => void,
+  onError: (error: Error) => void,
+): void {
+  let currentPort = initialPort;
+  let retries = 0;
+
+  const tryListen = () => {
+    server.once("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") {
+        if (!isAutoAssigned) {
+          // Port was explicitly specified, don't retry
+          onError(new Error(`Port ${currentPort} is already in use`));
+          return;
+        }
+
+        if (retries >= MAX_PORT_RETRIES) {
+          onError(new Error(`Failed to find available port after ${MAX_PORT_RETRIES} retries (tried ${initialPort}-${currentPort})`));
+          return;
+        }
+
+        retries++;
+        currentPort++;
+        console.log(`Port ${currentPort - 1} in use, trying ${currentPort}...`);
+        tryListen();
+      } else {
+        onError(err);
+      }
+    });
+
+    server.listen(currentPort, "127.0.0.1", () => {
+      onSuccess(currentPort);
+    });
+  };
+
+  tryListen();
 }
 
 export const serve = new Command("serve")
@@ -205,20 +250,29 @@ export const serve = new Command("serve")
     const root = process.cwd();
 
     // Determine port: explicit > env > auto-increment from registry
-    const resolvePort = async (): Promise<number> => {
+    // Returns [port, isAutoAssigned] to enable retry logic on EADDRINUSE
+    const resolvePort = async (): Promise<[number, boolean]> => {
       if (options.port) {
-        return parseInt(options.port, 10);
+        return [parseInt(options.port, 10), false];
       }
       if (process.env.OSGREP_PORT) {
-        return parseInt(process.env.OSGREP_PORT, 10);
+        return [parseInt(process.env.OSGREP_PORT, 10), false];
       }
-      return getNextAvailablePort();
+      return [await getNextAvailablePort(), true];
     };
 
     // Handle background mode: spawn detached process and exit
+    // For auto-assigned ports, we let the child process determine its own port with retry logic.
+    // This prevents race conditions when multiple servers start simultaneously.
     if (options.background) {
-      const port = await resolvePort();
-      const args = ["serve", "-p", String(port)];
+      const [suggestedPort, isAutoAssigned] = await resolvePort();
+      const args = ["serve"];
+
+      // Only pass explicit port if user specified it (no retry on EADDRINUSE)
+      // Auto-assigned ports let child retry with different ports if needed
+      if (!isAutoAssigned) {
+        args.push("-p", String(suggestedPort));
+      }
       if (options.parentPid) {
         args.push("--parent-pid", options.parentPid);
       }
@@ -230,11 +284,50 @@ export const serve = new Command("serve")
       });
       child.unref();
 
-      console.log(`osgrep serve started in background on port ${port} (pid: ${child.pid})`);
-      process.exit(0);
+      // Wait for the server to start and verify it's responding
+      const maxWaitMs = 10_000;
+      const pollIntervalMs = 200;
+      const startTime = Date.now();
+
+      let verified = false;
+      let actualPort: number | undefined;
+      while (Date.now() - startTime < maxWaitMs) {
+        // Check if lock file exists with auth token
+        const lock = await readServerLock(root);
+        // For auto-assigned ports, accept any port; for explicit ports, require exact match
+        const portMatches = isAutoAssigned || lock?.port === suggestedPort;
+        if (lock?.authToken && portMatches) {
+          // Verify the server is actually responding
+          const isRunning = await verifyOsgrepServer(lock.port, lock.authToken, 1000);
+          if (isRunning) {
+            verified = true;
+            actualPort = lock.port;
+            break;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      }
+
+      if (verified && actualPort) {
+        console.log(`osgrep serve started in background on port ${actualPort} (pid: ${child.pid})`);
+        process.exit(0);
+      } else {
+        const portInfo = isAutoAssigned ? "auto-assigned port" : `port ${suggestedPort}`;
+        console.error(`Failed to start osgrep server on ${portInfo}. Server did not respond within ${maxWaitMs / 1000}s.`);
+        // Try to clean up the child if it's still around
+        try {
+          if (child.pid) {
+            process.kill(child.pid, "SIGTERM");
+          }
+        } catch {
+          // Child may have already exited
+        }
+        process.exit(1);
+      }
     }
 
-    const port = await resolvePort();
+    const [initialPort, isPortAutoAssigned] = await resolvePort();
+    let port = initialPort; // May be updated by retry logic on EADDRINUSE
     const parentPid = options.parentPid ? parseInt(options.parentPid, 10) : null;
     const authToken = randomUUID();
 
@@ -541,14 +634,27 @@ export const serve = new Command("serve")
         return respondJson(res, 404, { error: "not_found" });
       });
 
-      server!.listen(port, "127.0.0.1", async () => {
-        await writeServerLock(port, process.pid, root, authToken);
-        await registerServer({ cwd: root, port, pid: process.pid, authToken });
-        const lock = await readServerLock(root);
-        console.log(
-          `osgrep serve listening on port ${port} (lock: ${lock?.pid ?? "n/a"})`,
-        );
-      });
+      listenWithRetry(
+        server!,
+        initialPort,
+        isPortAutoAssigned,
+        async (actualPort) => {
+          port = actualPort; // Update port in case retry changed it
+          await writeServerLock(port, process.pid, root, authToken);
+          await registerServer({ cwd: root, port, pid: process.pid, authToken });
+          const lock = await readServerLock(root);
+          console.log(
+            `osgrep serve listening on port ${port} (lock: ${lock?.pid ?? "n/a"})`,
+          );
+        },
+        async (error) => {
+          console.error(
+            "Failed to start osgrep server:",
+            error instanceof Error ? error.message : "Unknown error",
+          );
+          await shutdown();
+        },
+      );
     } catch (error) {
       console.error(
         "Failed to start osgrep server:",
@@ -580,11 +686,16 @@ const stopCommand = new Command("stop")
       for (const entry of servers) {
         if (!isProcessRunning(entry.pid)) {
           stale++;
-          // Clean up lock file for non-running process
+          // Clean up lock file and registry entry for non-running process
           try {
             await clearServerLock(entry.cwd);
           } catch (_err) {
             // Ignore errors cleaning up lock files
+          }
+          try {
+            await unregisterServer(entry.cwd);
+          } catch (_err) {
+            // Ignore registry errors
           }
           continue;
         }
@@ -599,11 +710,16 @@ const stopCommand = new Command("stop")
             `Skipping kill to avoid terminating unrelated process. Cleaning up stale registry entry.`
           );
           skipped++;
-          // Clean up stale lock file
+          // Clean up stale lock file and registry entry
           try {
             await clearServerLock(entry.cwd);
           } catch (_err) {
             // Ignore errors cleaning up lock files
+          }
+          try {
+            await unregisterServer(entry.cwd);
+          } catch (_err) {
+            // Ignore registry errors
           }
           continue;
         }
@@ -615,24 +731,22 @@ const stopCommand = new Command("stop")
         } catch (err) {
           console.error(`Failed to stop server at ${entry.cwd}:`, err);
         }
-        // Clean up lock file
+        // Clean up lock file and registry entry
         try {
           await clearServerLock(entry.cwd);
         } catch (_err) {
           // Ignore errors cleaning up lock files
+        }
+        try {
+          await unregisterServer(entry.cwd);
+        } catch (_err) {
+          // Ignore registry errors
         }
       }
 
       // Give servers time to clean up gracefully
       if (stopped > 0) {
         await new Promise((resolve) => setTimeout(resolve, 500));
-      }
-
-      // Clear all registry entries (handles race conditions gracefully)
-      try {
-        await clearAllServers();
-      } catch {
-        // Ignore registry errors
       }
 
       if (stopped > 0) {

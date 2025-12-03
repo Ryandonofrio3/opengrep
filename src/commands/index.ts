@@ -40,8 +40,8 @@ export const index = new Command("index")
     false,
   )
   .option(
-    "--grammar-only",
-    "Only index files with TreeSitter grammar support (skip fallback chunking)",
+    "--allow-fallback",
+    "Also index files without TreeSitter grammar support (slower, may hang on large files)",
     false,
   )
   .action(async (_args, cmd) => {
@@ -51,7 +51,7 @@ export const index = new Command("index")
       path: string;
       reset: boolean;
       verbose: boolean;
-      grammarOnly: boolean;
+      allowFallback: boolean;
     } = cmd.optsWithGlobals();
 
     let store: Store | null = null;
@@ -107,7 +107,10 @@ export const index = new Command("index")
           onProgress,
           metaStore,
           undefined,
-          { grammarOnly: options.grammarOnly, verbose: options.verbose },
+          {
+            grammarOnly: !options.allowFallback,
+            verbose: options.verbose,
+          },
         );
 
         if (options.dryRun) {

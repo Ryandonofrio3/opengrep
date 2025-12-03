@@ -39,6 +39,7 @@ const GRAMMAR_SUPPORTED_EXTENSIONS = new Set([
   ".kt",
   ".kts",
   ".swift",
+  ".dart",
 ]);
 
 const META_FILE = path.join(os.homedir(), ".osgrep", "meta.json");
@@ -48,6 +49,19 @@ const SKIP_META_SAVE =
   process.env.OSGREP_SKIP_META_SAVE === "1" ||
   process.env.OSGREP_SKIP_META_SAVE === "true";
 const DEFAULT_EMBED_BATCH_SIZE = 24;
+const FILE_INDEX_TIMEOUT_MS = (() => {
+  const fromEnv = Number.parseInt(
+    process.env.OSGREP_FILE_TIMEOUT_MS ?? "",
+    10,
+  );
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
+  return 5000;
+})();
+const DEFAULT_GRAMMAR_ONLY =
+  process.env.OSGREP_ALLOW_FALLBACK === "1" ||
+    process.env.OSGREP_ALLOW_FALLBACK === "true"
+    ? false
+    : true;
 
 // Extensions we consider for indexing to avoid binary noise and improve relevance.
 const INDEXABLE_EXTENSIONS = new Set([
@@ -152,7 +166,10 @@ export function hasGrammarSupport(filePath: string): boolean {
 }
 
 // Check if a file should be indexed (extension and size).
-function isIndexableFile(filePath: string, grammarOnly = false): boolean {
+function isIndexableFile(
+  filePath: string,
+  grammarOnly: boolean = DEFAULT_GRAMMAR_ONLY,
+): boolean {
   const ext = extname(filePath).toLowerCase();
   const basename = path.basename(filePath).toLowerCase();
   if (!INDEXABLE_EXTENSIONS.has(ext) && !INDEXABLE_EXTENSIONS.has(basename)) {
@@ -175,7 +192,10 @@ function isIndexableFile(filePath: string, grammarOnly = false): boolean {
   return true;
 }
 
-export function isIndexablePath(filePath: string, grammarOnly = false): boolean {
+export function isIndexablePath(
+  filePath: string,
+  grammarOnly: boolean = DEFAULT_GRAMMAR_ONLY,
+): boolean {
   return isIndexableFile(filePath, grammarOnly);
 }
 
@@ -342,6 +362,11 @@ export async function listStoreFileHashes(
   return byExternalId;
 }
 
+// File size limits (in bytes) to prevent hanging on massive files
+const MAX_CODE_SIZE = 1024 * 1024; // 1MB for code
+const MAX_DATA_SIZE = 10 * 1024;   // 10KB for JSON/YAML data files
+const DATA_EXTENSIONS = new Set([".json", ".yaml", ".yml", ".xml", ".csv"]);
+
 export async function indexFile(
   store: Store,
   storeId: string,
@@ -354,6 +379,23 @@ export async function indexFile(
   forceIndex?: boolean,
 ): Promise<IndexFileResult> {
   const indexStart = PROFILE_ENABLED ? now() : null;
+
+  // Check file size first
+  try {
+    const stats = await fs.promises.stat(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const limit = DATA_EXTENSIONS.has(ext) ? MAX_DATA_SIZE : MAX_CODE_SIZE;
+    
+    if (stats.size > limit) {
+      if (process.env.OSGREP_VERBOSE) {
+        console.log(`[skip] ${fileName} too large (${(stats.size / 1024).toFixed(1)}KB > ${(limit / 1024).toFixed(1)}KB)`);
+      }
+      return { chunks: [], indexed: false };
+    }
+  } catch {
+    // If stat fails, we'll likely fail at readFile too, so just continue
+  }
+
   let buffer: Buffer;
   let hash: string;
 
@@ -450,7 +492,13 @@ export async function initialSync(
   signal?: AbortSignal,
   options?: InitialSyncOptions,
 ): Promise<InitialSyncResult> {
-  const grammarOnly = options?.grammarOnly ?? false;
+  const grammarOnly = options?.grammarOnly ?? DEFAULT_GRAMMAR_ONLY;
+  const verbose = options?.verbose ?? false;
+  const logVerbose = (message: string) => {
+    if (verbose) {
+      console.log(message);
+    }
+  };
 
   if (metaStore) {
     await metaStore.load();
@@ -509,6 +557,11 @@ export async function initialSync(
   // 2. Walk file system and apply the VELVET ROPE filter
   const fileWalkStart = PROFILE_ENABLED ? now() : null;
 
+  // Start worker warmup early so it's ready when scanning finishes
+  if (!dryRun) {
+    workerManager.warmup().catch(() => { });
+  }
+
   // Files on disk that are not gitignored.
   const allFiles: string[] = [];
   for await (const file of fileSystem.getFiles(repoRoot)) {
@@ -524,7 +577,20 @@ export async function initialSync(
   }
 
   // Apply extension filter to pick index candidates.
-  const repoFiles = aliveFiles.filter((filePath) => isIndexableFile(filePath, grammarOnly));
+  const repoFiles = aliveFiles.filter((filePath) =>
+    isIndexableFile(filePath, grammarOnly),
+  );
+  if (verbose && grammarOnly) {
+    const skippedCount = aliveFiles.length - repoFiles.length;
+    if (skippedCount > 0) {
+      console.log(
+        `[scan] Skipping ${skippedCount} unsupported file(s); fallback disabled`,
+      );
+    }
+  }
+  logVerbose(
+    `[scan] Found ${repoFiles.length} indexable file(s) (grammarOnly=${grammarOnly})`,
+  );
 
   // C. Determine Staleness
   // Stale = In DB, but not in 'aliveFiles' (meaning deleted from disk or added to .gitignore)
@@ -546,7 +612,28 @@ export async function initialSync(
     const toWrite = writeBuffer;
     writeBuffer = [];
     const writeStart = PROFILE_ENABLED ? now() : null;
-    await store.insertBatch(storeId, toWrite);
+    logVerbose(
+      `[db] Writing batch of ${toWrite.length} vector record(s) (force=${force})`,
+    );
+
+    try {
+      await store.insertBatch(storeId, toWrite);
+    } catch (err) {
+      // If a batch fails to insert, log the error and skip these records.
+      // This prevents one problematic file from crashing the entire indexing process.
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      const affectedFiles = [...new Set(toWrite.map((r) => r.path as string))];
+      console.error(
+        `\n[error] Database write failed (skipping ${toWrite.length} records): ${errorMsg}`,
+      );
+      if (verbose) {
+        console.error(
+          `[error] Affected files:\n  - ${affectedFiles.join("\n  - ")}`,
+        );
+      }
+      // Do NOT re-throw. We consume the error and continue with the rest of the indexing.
+      return;
+    }
 
     // CHECKPOINTING FIX: Update meta store only after successful write
     if (metaStore) {
@@ -568,28 +655,14 @@ export async function initialSync(
     }
   };
 
-  const flushEmbedQueue = async (force = false) => {
-    if (dryRun) {
-      embedQueue.length = 0;
-      return;
-    }
-    while (
-      embedQueue.length >= EMBED_BATCH_SIZE ||
-      (force && embedQueue.length > 0)
-    ) {
-      const batch = embedQueue.splice(0, EMBED_BATCH_SIZE);
-      const embedStart = PROFILE_ENABLED ? now() : null;
-      const vectors = await preparedChunksToVectors(batch);
-      if (PROFILE_ENABLED && embedStart && profile) {
-        profile.sections.embed =
-          (profile.sections.embed ?? 0) + toMs(embedStart);
-        profile.sections.embedBatches =
-          (profile.sections.embedBatches ?? 0) + 1;
-      }
-      writeBuffer.push(...vectors);
-      await flushWriteBuffer();
-    }
-  };
+  // const flushEmbedQueue = async (force = false) => {
+  //   // This function is kept for backward compatibility/reference but should not be used
+  //   // in favor of the new inline queueFlush logic in initialSync.
+  //   if (dryRun) {
+  //     embedQueue.length = 0;
+  //     return;
+  //   }
+  // };
 
   if (PROFILE_ENABLED && profile) {
     profile.processed = total;
@@ -640,9 +713,22 @@ export async function initialSync(
               pendingIndexCount += 1;
             }
 
-            onProgress?.({ processed, indexed, total, filePath });
-          } catch (_err) {
-            onProgress?.({ processed, indexed, total, filePath });
+            onProgress?.({
+              processed,
+              indexed,
+              total,
+              filePath,
+              phase: "scanning",
+            });
+          } catch (err) {
+            onProgress?.({
+              processed,
+              indexed,
+              total,
+              filePath,
+              phase: "scanning",
+              error: err instanceof Error ? err.message : "Unknown error",
+            });
           }
         }),
       ),
@@ -677,13 +763,73 @@ export async function initialSync(
       initialDbCount - stalePaths.length - candidates.length <= 0;
   }
 
-  const queueFlush = (force = false) => {
-    embedFlushQueue = embedFlushQueue.then(() => flushEmbedQueue(force));
+  const queueFlush = async (force = false) => {
+    // Logic for batching chunks for embedding worker
+    while (
+      embedQueue.length >= EMBED_BATCH_SIZE ||
+      (force && embedQueue.length > 0)
+    ) {
+      const batch = embedQueue.splice(0, EMBED_BATCH_SIZE);
+      const texts = batch.map((c) => c.content);
+      try {
+        const embeddings = await workerManager.computeHybrid(texts);
+        for (let i = 0; i < batch.length; i++) {
+          const c = batch[i];
+          const e = embeddings[i];
+          writeBuffer.push({
+            id: c.id,
+            content: c.content,
+            path: c.path,
+            hash: c.hash,
+            start_line: c.start_line,
+            end_line: c.end_line,
+            vector: e.dense,
+            colbert: e.colbert,
+            colbert_scale: e.scale,
+            chunk_type: c.chunk_type, // "anchor" | "code"
+          });
+        }
+        await flushWriteBuffer(false);
+      } catch (err) {
+        // If a batch fails, we log it and SKIP these chunks.
+        // This prevents one bad file from crashing/hanging the entire process.
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        const affectedFiles = [...new Set(batch.map((c) => c.path))];
+        console.error(
+          `\n[error] Embedding batch failed (skipping ${batch.length} chunks): ${errorMsg}`,
+        );
+        if (verbose) {
+          console.error(
+            `[error] Affected files:\n  - ${affectedFiles.join("\n  - ")}`,
+          );
+        }
+        // Do NOT re-throw. We consume the error and continue to the next batch.
+      }
+    }
+  };
+
+  // Wrap the flushing logic to chain promises
+  const queueFlushWrapper = (force = false) => {
+    embedFlushQueue = embedFlushQueue.then(() => queueFlush(force));
     return embedFlushQueue;
   };
 
   // Second pass: chunk + embed + write using global batching (parallel chunking)
   if (!dryRun) {
+    if (repoFiles.length > 0) {
+      logVerbose(
+        "[index] Waiting for embedding worker to be ready...",
+      );
+      // Ensure warmup is complete before flooding the queue
+      await workerManager.warmup();
+      
+      onProgress?.({
+        processed,
+        indexed,
+        total,
+        phase: "indexing",
+      });
+    }
     const INDEX_BATCH = 50;
     for (let i = 0; i < candidates.length; i += INDEX_BATCH) {
       const slice = candidates.slice(i, i + INDEX_BATCH);
@@ -691,9 +837,15 @@ export async function initialSync(
         slice.map((candidate) =>
           limit(async () => {
             if (signal?.aborted) return;
+            let timeoutId: NodeJS.Timeout | undefined;
+            let timedOut = false;
+            let indexPromise: Promise<IndexFileResult> | null = null;
             try {
+              const fileStart = PROFILE_ENABLED ? now() : null;
+              const relPath = path.relative(repoRoot, candidate.filePath);
+              logVerbose(`[index] Chunking ${relPath}`);
               const buffer = await fs.promises.readFile(candidate.filePath);
-              const { chunks, indexed: didIndex } = await indexFile(
+              indexPromise = indexFile(
                 store,
                 storeId,
                 candidate.filePath,
@@ -704,13 +856,37 @@ export async function initialSync(
                 candidate.hash,
                 storeIsEmpty,
               );
+              const timeoutPromise = new Promise<never>((_, reject) => {
+                timeoutId = setTimeout(() => {
+                  timedOut = true;
+                  reject(
+                    new Error(
+                      `Indexing timed out after ${FILE_INDEX_TIMEOUT_MS}ms`,
+                    ),
+                  );
+                }, FILE_INDEX_TIMEOUT_MS);
+              });
+              const { chunks, indexed: didIndex } = await Promise.race([
+                indexPromise,
+                timeoutPromise,
+              ]);
+              const duration =
+                PROFILE_ENABLED && fileStart ? toMs(fileStart) : undefined;
+              logVerbose(
+                `[index] ${didIndex ? "Indexed" : "Skipped"
+                } ${relPath} (${chunks.length} chunks)${duration ? ` in ${duration.toFixed(0)}ms` : ""
+                }`,
+              );
               pendingIndexCount = Math.max(0, pendingIndexCount - 1);
               if (didIndex) {
                 indexed += 1;
                 if (chunks.length > 0) {
                   embedQueue.push(...chunks);
+                  logVerbose(
+                    `[embed] Queue length ${embedQueue.length} after ${relPath}`,
+                  );
                   if (embedQueue.length >= EMBED_BATCH_SIZE) {
-                    await queueFlush();
+                    await queueFlushWrapper();
                   }
                 }
 
@@ -734,25 +910,55 @@ export async function initialSync(
                 indexed,
                 total,
                 filePath: candidate.filePath,
+                phase: "indexing",
               });
-            } catch (_err) {
+              logVerbose(
+                `[index] Pending files remaining: ${pendingIndexCount}`,
+              );
+            } catch (err) {
+              if (timedOut) {
+                indexPromise?.catch(() => { });
+                logVerbose(
+                  `[timeout] Skipped ${candidate.filePath} after ${FILE_INDEX_TIMEOUT_MS}ms`,
+                );
+                pendingIndexCount = Math.max(0, pendingIndexCount - 1);
+                onProgress?.({
+                  processed,
+                  indexed,
+                  total,
+                  filePath: candidate.filePath,
+                  phase: "indexing",
+                  error: `Timed out after ${FILE_INDEX_TIMEOUT_MS}ms`,
+                });
+                return;
+              }
               pendingIndexCount = Math.max(0, pendingIndexCount - 1);
               onProgress?.({
                 processed,
                 indexed,
                 total,
                 filePath: candidate.filePath,
+                phase: "indexing",
+                error: err instanceof Error ? err.message : "Unknown error",
               });
+            } finally {
+              if (timeoutId) clearTimeout(timeoutId);
+              logVerbose(
+                `[index] Pending files remaining: ${pendingIndexCount}`,
+              );
             }
           }),
         ),
       );
       // Force flush between batches to ensure backpressure
-      await queueFlush(true);
+      await queueFlushWrapper(true);
+      logVerbose(
+        `[embed] Forced flush after batch ${(i + INDEX_BATCH) / INDEX_BATCH}`,
+      );
     }
   }
 
-  await queueFlush(true);
+  await queueFlushWrapper(true);
   await flushWriteBuffer(true);
 
   if (PROFILE_ENABLED && profile) {

@@ -25,6 +25,7 @@ const GRAMMAR_URLS: Record<string, string> = {
     "https://github.com/fwcd/tree-sitter-kotlin/releases/download/0.3.8/tree-sitter-kotlin.wasm",
   swift:
     "https://github.com/alex-pinkus/tree-sitter-swift/releases/download/0.7.1-pypi/tree-sitter-swift.wasm",
+  dart: "https://cdn.jsdelivr.net/npm/tree-sitter-dart@1.0.0/tree-sitter-dart.wasm",
 };
 
 /** List of supported grammar names (for filtering files by grammar support) */
