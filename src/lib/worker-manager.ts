@@ -8,6 +8,9 @@ import {
   WORKER_TIMEOUT_MS,
 } from "../config";
 
+const PROFILE =
+  process.env.OSGREP_PROFILE === "1" || process.env.OSGREP_PROFILE === "true";
+
 type WorkerRequest =
   | { id: string; hybrid: { texts: string[] } }
   | { id: string; query: { text: string } }
@@ -145,7 +148,9 @@ export class WorkerManager {
 
     // First successful message marks worker as booted
     if (!this.workerBooted) {
-      console.log(`[WorkerManager] Worker booted successfully (req ${id})`);
+      if (PROFILE) {
+        console.log(`[WorkerManager] Worker booted successfully (req ${id})`);
+      }
       this.workerBooted = true;
     }
 
@@ -250,9 +255,11 @@ export class WorkerManager {
       ? WORKER_TIMEOUT_MS
       : WORKER_BOOT_TIMEOUT_MS;
 
-    console.log(
-      `[WorkerManager] Sending request ${id} (booted=${this.workerBooted}, timeout=${timeoutMs}ms)`,
-    );
+    if (PROFILE) {
+      console.log(
+        `[WorkerManager] Sending request ${id} (booted=${this.workerBooted}, timeout=${timeoutMs}ms)`,
+      );
+    }
 
     return new Promise<T>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
