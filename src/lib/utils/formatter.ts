@@ -113,9 +113,9 @@ export function formatTextResults(
       const truncated =
         !options.content && lines.length > maxLines
           ? [
-            ...lines.slice(0, maxLines),
-            `... (+${lines.length - maxLines} more lines)`,
-          ]
+              ...lines.slice(0, maxLines),
+              `... (+${lines.length - maxLines} more lines)`,
+            ]
           : lines;
 
       output += `${relPath}:${line}${tagStr}\n`;
@@ -181,9 +181,9 @@ export function formatTextResults(
       const truncated =
         !options.content && lines.length > maxLines
           ? [
-            ...lines.slice(0, maxLines),
-            style.dim(`... (+${lines.length - maxLines} more lines)`),
-          ]
+              ...lines.slice(0, maxLines),
+              style.dim(`... (+${lines.length - maxLines} more lines)`),
+            ]
           : lines;
 
       // Apply syntax highlighting for humans

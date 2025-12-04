@@ -1,7 +1,9 @@
-import * as http from "node:http";
-import * as path from "node:path";
 import { spawn } from "node:child_process";
+import * as http from "node:http";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { Command } from "commander";
+import { PATHS } from "../config";
 import { ensureGrammars } from "../lib/index/grammar-loader";
 import { createIndexingSpinner } from "../lib/index/sync-helpers";
 import { initialSync } from "../lib/index/syncer";
@@ -27,22 +29,33 @@ export const serve = new Command("serve")
   )
   .option("-b, --background", "Run in background", false)
   .action(async (_args, cmd) => {
-    const options: { port: string; background: boolean } = cmd.optsWithGlobals();
+    const options: { port: string; background: boolean } =
+      cmd.optsWithGlobals();
     const port = parseInt(options.port, 10);
     const projectRoot = findProjectRoot(process.cwd()) ?? process.cwd();
 
     // Check if already running
     const existing = getServerForProject(projectRoot);
     if (existing && isProcessRunning(existing.pid)) {
-      console.log(`Server already running for ${projectRoot} (PID: ${existing.pid}, Port: ${existing.port})`);
+      console.log(
+        `Server already running for ${projectRoot} (PID: ${existing.pid}, Port: ${existing.port})`,
+      );
       return;
     }
 
     if (options.background) {
-      const args = process.argv.slice(2).filter((arg) => arg !== "-b" && arg !== "--background");
+      const args = process.argv
+        .slice(2)
+        .filter((arg) => arg !== "-b" && arg !== "--background");
+      const logDir = path.join(PATHS.globalRoot, "logs");
+      fs.mkdirSync(logDir, { recursive: true });
+      const logFile = path.join(logDir, "server.log");
+      const out = fs.openSync(logFile, "a");
+      const err = fs.openSync(logFile, "a");
+
       const child = spawn(process.argv[0], [process.argv[1], ...args], {
         detached: true,
-        stdio: "ignore",
+        stdio: ["ignore", out, err],
         cwd: process.cwd(),
         env: { ...process.env, OSGREP_BACKGROUND: "true" },
       });
@@ -129,9 +142,14 @@ export const serve = new Command("serve")
                   const rootPrefix = projectRoot.endsWith(path.sep)
                     ? projectRoot
                     : `${projectRoot}${path.sep}`;
+
+                  // Normalize paths for consistency (Windows/Linux)
+                  const normalizedRootPrefix = path.normalize(rootPrefix);
+                  const normalizedResolvedPath = path.normalize(resolvedPath);
+
                   if (
-                    resolvedPath !== projectRoot &&
-                    !resolvedPath.startsWith(rootPrefix)
+                    normalizedResolvedPath !== projectRoot &&
+                    !normalizedResolvedPath.startsWith(normalizedRootPrefix)
                   ) {
                     res.statusCode = 400;
                     res.setHeader("Content-Type", "application/json");

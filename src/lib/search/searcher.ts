@@ -7,11 +7,11 @@ import type {
   VectorRecord,
 } from "../store/types";
 import type { VectorDB } from "../store/vector-db";
-import { getWorkerPool } from "../workers/pool";
 import { escapeSqlString, normalizePath } from "../utils/filter-builder";
+import { getWorkerPool } from "../workers/pool";
 
 export class Searcher {
-  constructor(private db: VectorDB) { }
+  constructor(private db: VectorDB) {}
 
   private mapRecordToChunk(
     record: Partial<VectorRecord>,

@@ -106,7 +106,7 @@ export async function initialSync(
       dot: false,
       onlyFiles: true,
       unique: true,
-      followSymbolicLinks: true,
+      followSymbolicLinks: false,
       ignore: [...DEFAULT_IGNORE_PATTERNS, ".git/**", ".osgrep/**"],
       suppressErrors: true,
       globstar: true,

@@ -50,7 +50,6 @@ function createProgressTracker(): ProgressTracker {
   };
 }
 
-
 /**
  * Creates a shared spinner + progress callback pair that keeps the CLI UI
  * consistent across commands running `initialSync`.

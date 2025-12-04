@@ -53,5 +53,3 @@ export interface SearchResponse {
 export interface SearchFilter {
   [key: string]: MetadataValue;
 }
-
-

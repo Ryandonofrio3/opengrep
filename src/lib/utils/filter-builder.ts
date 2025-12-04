@@ -1,12 +1,7 @@
-/**
- * Safely escapes a string for use in a SQL-like filter.
- * Escapes single quotes and backslashes.
- *
- * @param str The string to escape
- * @returns The escaped string
- */
 export function escapeSqlString(str: string): string {
-    return str.replace(/\\/g, "\\\\").replace(/'/g, "''");
+  // LanceDB (via DataFusion) treats backslashes literally in standard strings.
+  // We only need to escape single quotes by doubling them.
+  return str.replace(/'/g, "''");
 }
 
 /**
@@ -15,5 +10,5 @@ export function escapeSqlString(str: string): string {
  * @returns The normalized path with forward slashes
  */
 export function normalizePath(p: string): string {
-    return p.replace(/\\/g, "/");
+  return p.replace(/\\/g, "/");
 }

@@ -186,8 +186,6 @@ export class VectorDB {
     return rows.length > 0;
   }
 
-
-
   async deletePaths(paths: string[]): Promise<void> {
     if (!paths.length) return;
     const table = await this.ensureTable();
@@ -215,7 +213,8 @@ export class VectorDB {
     this.unregisterCleanup?.();
     this.unregisterCleanup = undefined;
     if (this.db) {
-      await this.db.close();
+      // @ts-ignore - close might not exist on some versions/mocks
+      if (this.db.close) await this.db.close();
     }
     this.db = null;
   }
