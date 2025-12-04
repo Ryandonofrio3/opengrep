@@ -49,9 +49,12 @@ export class Searcher {
       adjusted *= 1.25;
     }
     const pathStr = (record.path || "").toLowerCase();
+    // Aggressive test detection: match "test" or "spec" anywhere in the path
+    // but try to avoid common false positives like "latest" or "special" if possible.
+    // However, the user requested aggressive matching, so we will follow the PR's lead.
     if (
-      pathStr.includes(".test.") ||
-      pathStr.includes(".spec.") ||
+      pathStr.includes("test") ||
+      pathStr.includes("spec") ||
       pathStr.includes("__tests__")
     ) {
       adjusted *= 0.85;

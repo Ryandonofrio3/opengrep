@@ -11,6 +11,8 @@ export interface ProjectPaths {
   configPath: string;
 }
 
+import { getMainRepoRoot, isWorktree } from "./git";
+
 export function findProjectRoot(startDir = process.cwd()): string | null {
   const start = path.resolve(startDir);
   let dir = start;
@@ -18,6 +20,11 @@ export function findProjectRoot(startDir = process.cwd()): string | null {
 
   while (true) {
     if (fs.existsSync(path.join(dir, ".git"))) {
+      // If it's a worktree, resolve to the main repo root
+      if (isWorktree(dir)) {
+        const mainRoot = getMainRepoRoot(dir);
+        if (mainRoot) return mainRoot;
+      }
       return dir;
     }
 

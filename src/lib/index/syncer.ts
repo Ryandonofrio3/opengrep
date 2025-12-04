@@ -106,7 +106,7 @@ export async function initialSync(
       dot: false,
       onlyFiles: true,
       unique: true,
-      followSymbolicLinks: false,
+      followSymbolicLinks: true,
       ignore: [...DEFAULT_IGNORE_PATTERNS, ".git/**", ".osgrep/**"],
       suppressErrors: true,
       globstar: true,
@@ -120,6 +120,7 @@ export async function initialSync(
       ? new Set<string>()
       : await metaCache.getAllKeys();
     const seenPaths = new Set<string>();
+    const visitedRealPaths = new Set<string>();
     const batch: VectorRecord[] = [];
     const pendingMeta = new Map<string, MetaEntry>();
     const pendingDeletes = new Set<string>();
@@ -197,6 +198,17 @@ export async function initialSync(
       if (ignoreFilter.ignores(relPath)) continue;
 
       const absPath = path.join(paths.root, relPath);
+
+      // Check real path to avoid duplicates and loops
+      try {
+        const realPath = fs.realpathSync(absPath);
+        if (visitedRealPaths.has(realPath)) continue;
+        visitedRealPaths.add(realPath);
+      } catch {
+        // Skip broken symlinks or inaccessible files
+        continue;
+      }
+
       if (!isIndexableFile(absPath)) continue;
 
       await schedule(async () => {

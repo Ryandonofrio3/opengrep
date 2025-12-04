@@ -68,6 +68,26 @@ export function isIndexablePath(filePath: string): boolean {
   return isIndexableFile(filePath);
 }
 
+/**
+ * Resolves a file entry to determine its real path and type.
+ * Handles symlinks by resolving them to their target.
+ */
+export function resolveEntry(
+  entryPath: string,
+): { path: string; isDirectory: boolean; isFile: boolean } | null {
+  try {
+    const stats = fs.statSync(entryPath);
+    return {
+      path: fs.realpathSync(entryPath),
+      isDirectory: stats.isDirectory(),
+      isFile: stats.isFile(),
+    };
+  } catch {
+    // Broken symlink or permission error
+    return null;
+  }
+}
+
 export function formatDenseSnippet(text: string, maxLength = 1500): string {
   const clean = text ?? "";
   if (clean.length <= maxLength) return clean;

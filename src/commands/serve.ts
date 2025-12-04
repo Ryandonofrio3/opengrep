@@ -1,5 +1,6 @@
 import * as http from "node:http";
 import * as path from "node:path";
+import { spawn } from "node:child_process";
 import { Command } from "commander";
 import { ensureGrammars } from "../lib/index/grammar-loader";
 import { createIndexingSpinner } from "../lib/index/sync-helpers";
@@ -9,6 +10,13 @@ import { ensureSetup } from "../lib/setup/setup-helpers";
 import { VectorDB } from "../lib/store/vector-db";
 import { gracefulExit } from "../lib/utils/exit";
 import { ensureProjectPaths, findProjectRoot } from "../lib/utils/project-root";
+import {
+  getServerForProject,
+  isProcessRunning,
+  listServers,
+  registerServer,
+  unregisterServer,
+} from "../lib/utils/server-registry";
 
 export const serve = new Command("serve")
   .description("Run osgrep as a background server with live indexing")
@@ -17,10 +25,32 @@ export const serve = new Command("serve")
     "Port to listen on",
     process.env.OSGREP_PORT || "4444",
   )
+  .option("-b, --background", "Run in background", false)
   .action(async (_args, cmd) => {
-    const options: { port: string } = cmd.optsWithGlobals();
+    const options: { port: string; background: boolean } = cmd.optsWithGlobals();
     const port = parseInt(options.port, 10);
     const projectRoot = findProjectRoot(process.cwd()) ?? process.cwd();
+
+    // Check if already running
+    const existing = getServerForProject(projectRoot);
+    if (existing && isProcessRunning(existing.pid)) {
+      console.log(`Server already running for ${projectRoot} (PID: ${existing.pid}, Port: ${existing.port})`);
+      return;
+    }
+
+    if (options.background) {
+      const args = process.argv.slice(2).filter((arg) => arg !== "-b" && arg !== "--background");
+      const child = spawn(process.argv[0], [process.argv[1], ...args], {
+        detached: true,
+        stdio: "ignore",
+        cwd: process.cwd(),
+        env: { ...process.env, OSGREP_BACKGROUND: "true" },
+      });
+      child.unref();
+      console.log(`Started background server (PID: ${child.pid})`);
+      return;
+    }
+
     const paths = ensureProjectPaths(projectRoot);
 
     try {
@@ -30,20 +60,30 @@ export const serve = new Command("serve")
       const vectorDb = new VectorDB(paths.lancedbDir);
       const searcher = new Searcher(vectorDb);
 
-      const { spinner, onProgress } = createIndexingSpinner(
-        projectRoot,
-        "Indexing before starting server...",
-      );
-      try {
-        await initialSync({
+      // Only show spinner if not in background (or check isTTY)
+      // If spawned in background with stdio ignore, console.log goes nowhere.
+      // But we might want to log to a file in the future.
+
+      if (!process.env.OSGREP_BACKGROUND) {
+        const { spinner, onProgress } = createIndexingSpinner(
           projectRoot,
-          onProgress,
-        });
+          "Indexing before starting server...",
+        );
+        try {
+          await initialSync({
+            projectRoot,
+            onProgress,
+          });
+          await vectorDb.createFTSIndex();
+          spinner.succeed("Initial index ready. Starting server...");
+        } catch (e) {
+          spinner.fail("Indexing failed");
+          throw e;
+        }
+      } else {
+        // In background, just sync quietly
+        await initialSync({ projectRoot });
         await vectorDb.createFTSIndex();
-        spinner.succeed("Initial index ready. Starting server...");
-      } catch (e) {
-        spinner.fail("Indexing failed");
-        throw e;
       }
 
       const server = http.createServer(async (req, res) => {
@@ -144,15 +184,24 @@ export const serve = new Command("serve")
       });
 
       server.listen(port, () => {
-        console.log(
-          `osgrep server listening on http://localhost:${port} (${projectRoot})`,
-        );
+        if (!process.env.OSGREP_BACKGROUND) {
+          console.log(
+            `osgrep server listening on http://localhost:${port} (${projectRoot})`,
+          );
+        }
+        registerServer({
+          pid: process.pid,
+          port,
+          projectRoot,
+          startTime: Date.now(),
+        });
       });
       server.on("error", (err) => {
         console.error("[serve] server error:", err);
       });
 
       const shutdown = async () => {
+        unregisterServer(process.pid);
         server.close();
         // Clean close of vectorDB
         try {
@@ -170,5 +219,53 @@ export const serve = new Command("serve")
       console.error("Serve failed:", message);
       process.exitCode = 1;
       await gracefulExit(1);
+    }
+  });
+
+serve
+  .command("status")
+  .description("Show status of background servers")
+  .action(() => {
+    const servers = listServers();
+    if (servers.length === 0) {
+      console.log("No running servers found.");
+      return;
+    }
+    console.log("Running servers:");
+    servers.forEach((s) => {
+      console.log(`- PID: ${s.pid} | Port: ${s.port} | Root: ${s.projectRoot}`);
+    });
+  });
+
+serve
+  .command("stop")
+  .description("Stop background servers")
+  .option("--all", "Stop all servers", false)
+  .action((options) => {
+    if (options.all) {
+      const servers = listServers();
+      let count = 0;
+      servers.forEach((s) => {
+        try {
+          process.kill(s.pid, "SIGTERM");
+          count++;
+        } catch (e) {
+          console.error(`Failed to stop PID ${s.pid}:`, e);
+        }
+      });
+      console.log(`Stopped ${count} servers.`);
+    } else {
+      const projectRoot = findProjectRoot(process.cwd()) ?? process.cwd();
+      const server = getServerForProject(projectRoot);
+      if (server) {
+        try {
+          process.kill(server.pid, "SIGTERM");
+          console.log(`Stopped server for ${projectRoot} (PID: ${server.pid})`);
+        } catch (e) {
+          console.error(`Failed to stop PID ${server.pid}:`, e);
+        }
+      } else {
+        console.log(`No server found for ${projectRoot}`);
+      }
     }
   });
