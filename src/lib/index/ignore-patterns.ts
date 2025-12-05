@@ -42,4 +42,9 @@ export const DEFAULT_IGNORE_PATTERNS = [
   "**/.azure/**",
   "secrets.*",
   "credentials.*",
+  // IDE and OS files
+  ".DS_Store",
+  "**/.idea/**",
+  "**/.vscode/**",
+  "Thumbs.db",
 ];

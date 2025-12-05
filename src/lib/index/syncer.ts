@@ -7,7 +7,7 @@ import { MetaCache, type MetaEntry } from "../store/meta-cache";
 import type { VectorRecord } from "../store/types";
 import { VectorDB } from "../store/vector-db";
 import { isIndexableFile } from "../utils/file-utils";
-import { acquireWriterLock, type LockHandle } from "../utils/lock";
+import { acquireWriterLockWithRetry, type LockHandle } from "../utils/lock";
 import { ensureProjectPaths } from "../utils/project-root";
 import { getWorkerPool } from "../workers/pool";
 import { DEFAULT_IGNORE_PATTERNS } from "./ignore-patterns";
@@ -71,14 +71,21 @@ export async function initialSync(
     signal,
   } = options;
   const paths = ensureProjectPaths(projectRoot);
+
+  // Propagate project root to worker processes
+  process.env.OSGREP_PROJECT_ROOT = paths.root;
+
   let lock: LockHandle | null = null;
   const vectorDb = new VectorDB(paths.lancedbDir);
-  let metaCache = new MetaCache(paths.lmdbPath);
   const ignoreFilter = buildIgnoreFilter(paths.root);
   const treatAsEmptyCache = reset && dryRun;
+  let metaCache: MetaCache | null = null;
 
   try {
-    lock = await acquireWriterLock(paths.osgrepDir);
+    lock = await acquireWriterLockWithRetry(paths.osgrepDir);
+
+    // Open MetaCache only after lock is acquired
+    metaCache = new MetaCache(paths.lmdbPath);
 
     if (!dryRun) {
       const hasRows = await vectorDb.hasAnyRows();
@@ -103,11 +110,15 @@ export async function initialSync(
 
     const globOptions: GlobOptions = {
       cwd: paths.root,
-      dot: false,
+      dot: true, // Enable dotfile discovery
       onlyFiles: true,
       unique: true,
       followSymbolicLinks: false,
-      ignore: [...DEFAULT_IGNORE_PATTERNS, ".git/**", ".osgrep/**"],
+      ignore: [
+        ...DEFAULT_IGNORE_PATTERNS,
+        ".git/**",
+        ".osgrep/**",
+      ],
       suppressErrors: true,
       globstar: true,
     };
@@ -160,7 +171,7 @@ export async function initialSync(
 
       flushPromise = flushBatch(
         vectorDb,
-        metaCache,
+        metaCache!, // Non-null assertion: metaCache is assigned after lock
         toWrite,
         metaEntries,
         deletes,
@@ -224,7 +235,7 @@ export async function initialSync(
             return;
           }
 
-          const cached = treatAsEmptyCache ? undefined : metaCache.get(relPath);
+          const cached = treatAsEmptyCache ? undefined : metaCache!.get(relPath);
 
           if (
             cached &&
@@ -262,7 +273,7 @@ export async function initialSync(
 
           if (cached && cached.hash === result.hash) {
             if (!dryRun) {
-              metaCache.put(relPath, metaEntry);
+              metaCache!.put(relPath, metaEntry);
             }
             processed += 1;
             seenPaths.add(relPath);
@@ -300,7 +311,7 @@ export async function initialSync(
             pendingDeletes.add(relPath);
             pendingMeta.delete(relPath);
             if (!dryRun) {
-              metaCache.delete(relPath);
+              metaCache!.delete(relPath);
             }
             processed += 1;
             markProgress(relPath);
@@ -343,7 +354,7 @@ export async function initialSync(
     if (!dryRun && stale.length > 0 && !shouldSkipCleanup) {
       await vectorDb.deletePaths(stale);
       stale.forEach((p) => {
-        metaCache.delete(p);
+        metaCache!.delete(p);
       });
     }
 
@@ -354,7 +365,7 @@ export async function initialSync(
     if (lock) {
       await lock.release();
     }
-    metaCache.close();
+    metaCache?.close();
     await vectorDb.close();
   }
 }

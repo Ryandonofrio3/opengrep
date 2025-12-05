@@ -85,6 +85,10 @@ export const search: Command = new CommanderCommand("search")
       const searchRoot = exec_path ? path.resolve(exec_path) : root;
       const projectRoot = findProjectRoot(searchRoot) ?? searchRoot;
       const paths = ensureProjectPaths(projectRoot);
+
+      // Propagate project root to worker processes
+      process.env.OSGREP_PROJECT_ROOT = projectRoot;
+
       vectorDb = new VectorDB(paths.lancedbDir);
       const searcher = new Searcher(vectorDb);
 

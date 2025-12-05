@@ -65,11 +65,12 @@ export class Searcher {
 
     const pathStr = (record.path || "").toLowerCase();
 
-    if (
-      pathStr.includes("test") ||
-      pathStr.includes("spec") ||
-      pathStr.includes("__tests__")
-    ) {
+    // Use path-segment and filename patterns to avoid false positives like "latest"
+    const isTestPath =
+      /(^|\/)(__tests__|tests?|specs?)(\/|$)/i.test(pathStr) ||
+      /\.(test|spec)\.[cm]?[jt]sx?$/i.test(pathStr);
+
+    if (isTestPath) {
       adjusted *= 0.9; // Downweight tests
     }
     if (
@@ -125,9 +126,9 @@ export class Searcher {
 
     // Ensure FTS index exists (lazy init on first search)
     if (!this.ftsIndexChecked) {
+      this.ftsIndexChecked = true; // Set immediately to prevent retry spam
       try {
         await this.db.createFTSIndex();
-        this.ftsIndexChecked = true;
       } catch (e) {
         console.warn("[Searcher] Failed to ensure FTS index:", e);
       }

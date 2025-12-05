@@ -47,9 +47,7 @@ export const index = new Command("index")
       vectorDb = new VectorDB(paths.lancedbDir);
 
       if (options.reset) {
-        console.log(
-          `Resetting index at ${paths.osgrepDir} (waiting for lock)...`,
-        );
+        console.log(`Resetting index at ${paths.osgrepDir}...`);
         // We do NOT manually drop/rm here anymore to avoid race conditions.
         // The syncer handles it inside the lock.
       }

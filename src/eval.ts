@@ -1,5 +1,5 @@
 // Reduce worker pool fan-out during eval to avoid ONNX concurrency issues
-process.env.OSGREP_WORKER_COUNT ??= "1";
+process.env.OSGREP_WORKER_THREADS ??= "1";
 
 import { Searcher } from "./lib/search/searcher";
 import type { SearchResponse } from "./lib/store/types";

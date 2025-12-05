@@ -79,6 +79,7 @@ vi.mock("../utils/project-root", () => ({
 
 vi.mock("../utils/lock", () => ({
     acquireWriterLock: async () => ({ release: async () => { } }),
+    acquireWriterLockWithRetry: async () => ({ release: async () => { } }),
 }));
 
 vi.mock("../utils/file-utils", () => ({

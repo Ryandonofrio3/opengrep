@@ -66,6 +66,9 @@ export const serve = new Command("serve")
 
     const paths = ensureProjectPaths(projectRoot);
 
+    // Propagate project root to worker processes
+    process.env.OSGREP_PROJECT_ROOT = projectRoot;
+
     try {
       await ensureSetup();
       await ensureGrammars(console.log, { silent: true });
@@ -220,7 +223,21 @@ export const serve = new Command("serve")
 
       const shutdown = async () => {
         unregisterServer(process.pid);
-        server.close();
+
+        // Properly await server close
+        await new Promise<void>((resolve, reject) => {
+          server.close((err) => {
+            if (err) {
+              console.error("Error closing server:", err);
+              reject(err);
+            } else {
+              resolve();
+            }
+          });
+          // Timeout fallback in case close hangs
+          setTimeout(resolve, 5000);
+        });
+
         // Clean close of vectorDB
         try {
           await vectorDb.close();

@@ -7,8 +7,21 @@ let SKIP_IDS: Set<number> | null = null;
 
 function loadSkipIds(): Set<number> {
   if (SKIP_IDS) return SKIP_IDS;
-  const basePath = path.join(PATHS.models, ...MODEL_IDS.colbert.split("/"));
-  const skipPath = path.join(basePath, "skiplist.json");
+
+  // Check local models first (same logic as orchestrator)
+  const PROJECT_ROOT = process.env.OSGREP_PROJECT_ROOT
+    ? path.resolve(process.env.OSGREP_PROJECT_ROOT)
+    : process.cwd();
+  const localModels = path.join(PROJECT_ROOT, "models");
+  const localColbert = path.join(localModels, ...MODEL_IDS.colbert.split("/"));
+  const localSkipPath = path.join(localColbert, "skiplist.json");
+
+  // Try local first, then global
+  const globalBasePath = path.join(PATHS.models, ...MODEL_IDS.colbert.split("/"));
+  const globalSkipPath = path.join(globalBasePath, "skiplist.json");
+
+  const skipPath = fs.existsSync(localSkipPath) ? localSkipPath : globalSkipPath;
+
   if (fs.existsSync(skipPath)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(skipPath, "utf8")) as number[];
@@ -51,6 +64,10 @@ export function maxSim(
       const dim = Math.min(qVec.length, dVec.length);
       const dot = inner(qVec.subarray(0, dim), dVec.subarray(0, dim));
       if (dot > maxDotProduct) maxDotProduct = dot;
+    }
+    // Guard against all tokens being skipped
+    if (!Number.isFinite(maxDotProduct)) {
+      maxDotProduct = 0;
     }
     totalScore += maxDotProduct;
   }

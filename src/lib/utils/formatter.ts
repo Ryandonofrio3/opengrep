@@ -105,8 +105,10 @@ export function formatTextResults(
       const tags: string[] = [];
       const type = item.chunk_type || "";
       if (type.match(/function|class|method/)) tags.push("Definition");
-      if (relPath.includes("test") || relPath.includes("spec"))
-        tags.push("Test");
+      const isTestPath =
+        /(^|\/)(__tests__|tests?|specs?)(\/|$)/i.test(relPath) ||
+        /\.(test|spec)\.[cm]?[jt]sx?$/i.test(relPath);
+      if (isTestPath) tags.push("Test");
       const tagStr = tags.length > 0 ? ` [${tags.join(",")}]` : "";
 
       const lines = cleanSnippetLines(item.content);

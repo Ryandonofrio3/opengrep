@@ -52,7 +52,9 @@ env.cacheDir = CACHE_DIR;
 env.allowLocalModels = true;
 env.allowRemoteModels = true;
 
-const PROJECT_ROOT = process.cwd();
+const PROJECT_ROOT = process.env.OSGREP_PROJECT_ROOT
+  ? path.resolve(process.env.OSGREP_PROJECT_ROOT)
+  : process.cwd();
 const LOCAL_MODELS = path.join(PROJECT_ROOT, "models");
 if (fs.existsSync(LOCAL_MODELS)) {
   env.localModelPath = LOCAL_MODELS;
