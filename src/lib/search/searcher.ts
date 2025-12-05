@@ -47,7 +47,9 @@ export class Searcher {
     // Item 6: Anchors are recall helpers, not rank contenders
     if (record.is_anchor) {
       // Minimal penalty to break ties
-      adjusted *= 0.99;
+      const anchorPenalty =
+        Number.parseFloat(process.env.OSGREP_ANCHOR_PENALTY ?? "") || 0.99;
+      adjusted *= anchorPenalty;
     } else {
       // Only boost non-anchors
       const chunkType = record.chunk_type || "";
@@ -59,7 +61,9 @@ export class Searcher {
         "type_alias",
       ];
       if (boosted.includes(chunkType)) {
-        adjusted *= 1.05; // Small multiplicative boost (5%)
+        const boostFactor =
+          Number.parseFloat(process.env.OSGREP_CODE_BOOST ?? "") || 1.05;
+        adjusted *= boostFactor;
       }
     }
 
@@ -71,7 +75,9 @@ export class Searcher {
       /\.(test|spec)\.[cm]?[jt]sx?$/i.test(pathStr);
 
     if (isTestPath) {
-      adjusted *= 0.9; // Downweight tests
+      const testPenalty =
+        Number.parseFloat(process.env.OSGREP_TEST_PENALTY ?? "") || 0.9;
+      adjusted *= testPenalty; // Downweight tests
     }
     if (
       pathStr.endsWith(".md") ||
@@ -81,7 +87,9 @@ export class Searcher {
       pathStr.endsWith(".lock") ||
       pathStr.includes("/docs/")
     ) {
-      adjusted *= 0.85; // Downweight docs/data
+      const docPenalty =
+        Number.parseFloat(process.env.OSGREP_DOC_PENALTY ?? "") || 0.85;
+      adjusted *= docPenalty; // Downweight docs/data
     }
     return adjusted;
   }
@@ -96,6 +104,7 @@ export class Searcher {
     pathPrefix?: string,
   ): Promise<SearchResponse> {
     const finalLimit = top_k ?? 10;
+    const doRerank = _search_options?.rerank ?? true;
 
     const pool = getWorkerPool();
 
@@ -116,7 +125,11 @@ export class Searcher {
       ? `path LIKE '${escapeSqlString(normalizePath(pathPrefix))}%'`
       : undefined;
 
-    const PRE_RERANK_K = Math.max(finalLimit * 5, 500);
+    const envPreK = Number.parseInt(process.env.OSGREP_PRE_K ?? "", 10);
+    const PRE_RERANK_K =
+      Number.isFinite(envPreK) && envPreK > 0
+        ? envPreK
+        : Math.max(finalLimit * 5, 500);
     let table: Table;
     try {
       table = await this.db.ensureTable();
@@ -178,13 +191,31 @@ export class Searcher {
 
     // Item 8: Widen PRE_RERANK_K
     // Retrieve a wide set for Stage 1 filtering
-    const STAGE1_K = 1000;
+    const envStage1 = Number.parseInt(process.env.OSGREP_STAGE1_K ?? "", 10);
+    const STAGE1_K =
+      Number.isFinite(envStage1) && envStage1 > 0 ? envStage1 : 200;
     const topCandidates = fused.slice(0, STAGE1_K);
 
     // Item 9: Two-stage rerank
     // Stage 1: Cheap pooled cosine filter
     let stage2Candidates = topCandidates;
-    if (queryPooled && topCandidates.length > 200) {
+    const envStage2K = Number.parseInt(process.env.OSGREP_STAGE2_K ?? "", 10);
+    const STAGE2_K =
+      Number.isFinite(envStage2K) && envStage2K > 0 ? envStage2K : 40;
+
+    const envRerankTop = Number.parseInt(
+      process.env.OSGREP_RERANK_TOP ?? "",
+      10,
+    );
+    const RERANK_TOP =
+      Number.isFinite(envRerankTop) && envRerankTop > 0
+        ? envRerankTop
+        : 20;
+    const envBlend = Number.parseFloat(process.env.OSGREP_RERANK_BLEND ?? "");
+    const FUSED_WEIGHT =
+      Number.isFinite(envBlend) && envBlend >= 0 ? envBlend : 0.5;
+
+    if (queryPooled && topCandidates.length > STAGE2_K) {
       const cosineScores = topCandidates.map((doc) => {
         if (!doc.pooled_colbert_48d) return -1;
         // Manual cosine sim since we don't have helper here easily
@@ -197,49 +228,71 @@ export class Searcher {
         return dot;
       });
 
-      // Sort by cosine score and keep top 200
+      // Sort by cosine score and keep top N
       const withScore = topCandidates.map((doc, i) => ({
         doc,
         score: cosineScores[i],
       }));
       withScore.sort((a, b) => b.score - a.score);
-      stage2Candidates = withScore.slice(0, 200).map((x) => x.doc);
+      stage2Candidates = withScore.slice(0, STAGE2_K).map((x) => x.doc);
     }
 
     if (stage2Candidates.length === 0) {
       return { data: [] };
     }
 
-    const scores = await pool.rerank({
-      query: queryMatrixRaw,
-      docs: stage2Candidates.map((doc) => ({
-        colbert: (doc.colbert as Buffer | Int8Array | number[]) ?? [],
-        scale: typeof doc.colbert_scale === "number" ? doc.colbert_scale : 1,
-        token_ids: Array.isArray((doc as any).doc_token_ids)
-          ? ((doc as any).doc_token_ids as number[])
-          : undefined,
-      })),
-      colbertDim,
+    const rerankCandidates = stage2Candidates.slice(0, RERANK_TOP);
+
+    const scores = doRerank
+      ? await pool.rerank({
+          query: queryMatrixRaw,
+          docs: rerankCandidates.map((doc) => ({
+            colbert: (doc.colbert as Buffer | Int8Array | number[]) ?? [],
+            scale: typeof doc.colbert_scale === "number" ? doc.colbert_scale : 1,
+            token_ids: Array.isArray((doc as any).doc_token_ids)
+              ? ((doc as any).doc_token_ids as number[])
+              : undefined,
+          })),
+          colbertDim,
+        })
+      : rerankCandidates.map((doc, idx) => {
+          // If rerank is disabled, fall back to fusion ordering with structural boost
+          const key = doc.id || `${doc.path}:${doc.chunk_index}`;
+          const fusedScore = candidateScores.get(key) ?? 0;
+          // Small tie-breaker so later items don't all share 0
+          return fusedScore || 1 / (idx + 1);
+        });
+
+    type ScoredItem = {
+      record: typeof rerankCandidates[number];
+      score: number;
+    };
+
+    const scored: ScoredItem[] = rerankCandidates.map((doc, idx) => {
+      const base = scores?.[idx] ?? 0;
+      const key = doc.id || `${doc.path}:${doc.chunk_index}`;
+      const fusedScore = candidateScores.get(key) ?? 0;
+      const blended = base + FUSED_WEIGHT * fusedScore;
+      const boosted = this.applyStructureBoost(doc, blended);
+      return { record: doc, score: boosted };
     });
 
-    const scored = stage2Candidates.map((doc, idx) => ({
-      record: doc,
-      score: scores?.[idx] ?? 0,
-    }));
-
-    const boosted = scored.map((item) => {
-      const boost = this.applyStructureBoost(item.record, item.score);
-      return { ...item, score: boost };
-    });
-
-    boosted.sort((a, b) => b.score - a.score);
+    // Note: "boosted" was not previously declared -- fix to use "scored"
+    scored.sort((a: ScoredItem, b: ScoredItem) => b.score - a.score);
 
     // Item 10: Per-file diversification
     const seenFiles = new Map<string, number>();
-    const diversified: typeof boosted = [];
-    const MAX_PER_FILE = 3;
+    const diversified: ScoredItem[] = [];
+    const envMaxPerFile = Number.parseInt(
+      process.env.OSGREP_MAX_PER_FILE ?? "",
+      10,
+    );
+    const MAX_PER_FILE =
+      Number.isFinite(envMaxPerFile) && envMaxPerFile > 0
+        ? envMaxPerFile
+        : 3;
 
-    for (const item of boosted) {
+    for (const item of scored) {
       const path = item.record.path || "";
       const count = seenFiles.get(path) || 0;
       if (count < MAX_PER_FILE) {
@@ -249,7 +302,7 @@ export class Searcher {
       if (diversified.length >= finalLimit) break;
     }
 
-    const finalResults = diversified.map((item) => ({
+    const finalResults = diversified.map((item: ScoredItem) => ({
       ...item.record,
       _score: item.score,
       vector: undefined,
@@ -257,7 +310,7 @@ export class Searcher {
     }));
 
     return {
-      data: finalResults.map((r) => this.mapRecordToChunk(r, r._score || 0)),
+      data: finalResults.map((r: typeof finalResults[number]) => this.mapRecordToChunk(r, r._score || 0)),
     };
   }
 }

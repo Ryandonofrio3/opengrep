@@ -78,8 +78,8 @@ export function formatChunkText(
   const header = breadcrumb.length > 0 ? breadcrumb.join(" > ") : fileLabel;
   const displayText = `${header}\n---\n${chunk.content}`;
 
-  // Minimal prefix for embedding: just the file path comment
-  const content = `// ${filePath}\n${chunk.content}`;
+  // Embed the rich, contextual text so rerank can see breadcrumbs/imports/etc.
+  const content = displayText;
 
   return { content, displayText };
 }

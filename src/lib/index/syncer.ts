@@ -10,6 +10,7 @@ import { isIndexableFile } from "../utils/file-utils";
 import { acquireWriterLockWithRetry, type LockHandle } from "../utils/lock";
 import { ensureProjectPaths } from "../utils/project-root";
 import { getWorkerPool } from "../workers/pool";
+import type { ProcessFileResult } from "../workers/worker";
 import { DEFAULT_IGNORE_PATTERNS } from "./ignore-patterns";
 import type { InitialSyncProgress, InitialSyncResult } from "./sync-helpers";
 
@@ -189,6 +190,31 @@ export async function initialSync(
       }
     };
 
+    const isTimeoutError = (err: unknown) =>
+      err instanceof Error &&
+      err.message?.toLowerCase().includes("timed out");
+
+    const processFileWithRetry = async (
+      relPath: string,
+      absPath: string,
+    ): Promise<ProcessFileResult> => {
+      let retries = 0;
+      while (true) {
+        try {
+          return await pool.processFile({
+            path: relPath,
+            absolutePath: absPath,
+          });
+        } catch (err) {
+          if (isTimeoutError(err) && retries === 0) {
+            retries += 1;
+            continue;
+          }
+          throw err;
+        }
+      }
+    };
+
     const schedule = async (task: () => Promise<void>) => {
       const taskPromise = task();
       activeTasks.push(taskPromise);
@@ -248,10 +274,7 @@ export async function initialSync(
             return;
           }
 
-          const result = await pool.processFile({
-            path: relPath,
-            absolutePath: absPath,
-          });
+          const result = await processFileWithRetry(relPath, absPath);
 
           const metaEntry: MetaEntry = {
             hash: result.hash,

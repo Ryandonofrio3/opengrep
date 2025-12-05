@@ -31,6 +31,32 @@ type WorkerMessage =
   | { id: number; result: TaskResults[TaskMethod] }
   | { id: number; error: string };
 
+function reviveBufferLike(input: unknown): Buffer | Int8Array | unknown {
+  if (
+    input &&
+    typeof input === "object" &&
+    "type" in (input as Record<string, unknown>) &&
+    (input as Record<string, unknown>).type === "Buffer" &&
+    Array.isArray((input as Record<string, unknown>).data)
+  ) {
+    return Buffer.from((input as Record<string, unknown>).data as number[]);
+  }
+  return input;
+}
+
+function reviveProcessFileResult(
+  result: TaskResults["processFile"],
+): TaskResults["processFile"] {
+  if (!result || !Array.isArray(result.vectors)) return result;
+  const vectors = result.vectors.map((v) => {
+    const revived = reviveBufferLike(v.colbert);
+    return revived && (Buffer.isBuffer(revived) || revived instanceof Int8Array)
+      ? { ...v, colbert: revived }
+      : v;
+  });
+  return { ...result, vectors };
+}
+
 type PendingTask<M extends TaskMethod = TaskMethod> = {
   id: number;
   method: M;
@@ -47,7 +73,7 @@ const TASK_TIMEOUT_MS = (() => {
     10,
   );
   if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
-  return 30_000;
+  return 120_000;
 })();
 
 const FORCE_KILL_GRACE_MS = 200;
@@ -168,7 +194,13 @@ export class WorkerPool {
       if ("error" in msg) {
         task.reject(new Error(msg.error));
       } else {
-        task.resolve(msg.result as TaskResults[TaskMethod]);
+        let result = msg.result as TaskResults[TaskMethod];
+        if (task.method === "processFile") {
+          result = reviveProcessFileResult(
+            result as TaskResults["processFile"],
+          ) as TaskResults[TaskMethod];
+        }
+        task.resolve(result);
       }
 
       this.completeTask(task, worker);
@@ -206,9 +238,11 @@ export class WorkerPool {
     if (this.destroyed || !this.tasks.has(task.id)) return;
 
     this.clearTaskTimeout(task);
-    console.warn(
-      `[worker-pool] ${task.method} timed out after ${TASK_TIMEOUT_MS}ms; restarting worker.`,
-    );
+    if (task.method !== "processFile") {
+      console.warn(
+        `[worker-pool] ${task.method} timed out after ${TASK_TIMEOUT_MS}ms; restarting worker.`,
+      );
+    }
     task.reject(
       new Error(
         `Worker task ${task.method} timed out after ${TASK_TIMEOUT_MS}ms`,

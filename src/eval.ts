@@ -1,5 +1,5 @@
 // Reduce worker pool fan-out during eval to avoid ONNX concurrency issues
-process.env.OSGREP_WORKER_THREADS ??= "1";
+process.env.OSGREP_WORKER_COUNT ??= "1";
 
 import { Searcher } from "./lib/search/searcher";
 import type { SearchResponse } from "./lib/store/types";
@@ -620,7 +620,7 @@ async function run() {
 
   for (const c of cases) {
     const queryStart = performance.now();
-    const res = await searcher.search(c.query, topK, { rerank: true });
+    const res = await searcher.search(c.query, topK, { rerank: false });
     const queryEnd = performance.now();
     const timeMs = queryEnd - queryStart;
 
@@ -661,7 +661,13 @@ async function run() {
   await gracefulExit(0);
 }
 
-run().catch((err) => {
-  console.error("Eval failed:", err);
-  gracefulExit(1);
-});
+if (
+  // Only auto-run when executed directly (not when imported for experiments/tests)
+  require.main === module &&
+  process.env.OSGREP_EVAL_AUTORUN !== "0"
+) {
+  run().catch((err) => {
+    console.error("Eval failed:", err);
+    gracefulExit(1);
+  });
+}
