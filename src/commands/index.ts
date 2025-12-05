@@ -1,21 +1,15 @@
+import * as path from "node:path";
 import { Command } from "commander";
-import { createFileSystem, createStore } from "../lib/context";
-import { DEFAULT_IGNORE_PATTERNS } from "../lib/ignore-patterns";
-import { ensureSetup } from "../lib/setup-helpers";
-import { ensureStoreExists } from "../lib/store-helpers";
-import { getAutoStoreId } from "../lib/store-resolver";
+import { ensureGrammars } from "../lib/index/grammar-loader";
 import {
   createIndexingSpinner,
   formatDryRunSummary,
-} from "../lib/sync-helpers";
-import type { Store } from "../lib/store";
-import { initialSync, MetaStore } from "../utils";
-
-import { gracefulExit } from "../lib/exit";
-import { ensureGrammars } from "../lib/grammar-loader";
-
-const PROFILE_ENABLED =
-  process.env.OSGREP_PROFILE === "1" || process.env.OSGREP_PROFILE === "true";
+} from "../lib/index/sync-helpers";
+import { initialSync } from "../lib/index/syncer";
+import { ensureSetup } from "../lib/setup/setup-helpers";
+import { VectorDB } from "../lib/store/vector-db";
+import { gracefulExit } from "../lib/utils/exit";
+import { ensureProjectPaths, findProjectRoot } from "../lib/utils/project-root";
 
 export const index = new Command("index")
   .description("Index the current directory and create searchable store")
@@ -35,113 +29,89 @@ export const index = new Command("index")
     false,
   )
   .action(async (_args, cmd) => {
-    const options: { store?: string; dryRun: boolean; path: string; reset: boolean } =
-      cmd.optsWithGlobals();
+    const options: {
+      store?: string;
+      dryRun: boolean;
+      path: string;
+      reset: boolean;
+    } = cmd.optsWithGlobals();
+    let vectorDb: VectorDB | null = null;
 
-    let store: Store | null = null;
     try {
       await ensureSetup();
-      store = await createStore();
+      const indexRoot = options.path
+        ? path.resolve(options.path)
+        : process.cwd();
+      const projectRoot = findProjectRoot(indexRoot) ?? indexRoot;
+      const paths = ensureProjectPaths(projectRoot);
+      vectorDb = new VectorDB(paths.lancedbDir);
 
-      // Auto-detect store ID if not explicitly provided
-      const indexRoot = options.path || process.cwd();
-      const storeId = options.store || getAutoStoreId(indexRoot);
-
-      // Handle --reset flag: delete existing store and metadata before re-indexing
       if (options.reset) {
-        console.log(`Resetting index for store: ${storeId}`);
-        await store.deleteStore(storeId);
-        const metaStoreForReset = new MetaStore();
-        await metaStoreForReset.load();
-        metaStoreForReset.deleteByPrefix(indexRoot);
-        await metaStoreForReset.save();
-
-        console.log("Existing index removed. Re-indexing...");
-
-        // Ensure grammars are present before re-indexing
-        await ensureGrammars();
+        console.log(
+          `Resetting index at ${paths.osgrepDir} (waiting for lock)...`,
+        );
+        // We do NOT manually drop/rm here anymore to avoid race conditions.
+        // The syncer handles it inside the lock.
       }
 
-      await ensureStoreExists(store, storeId);
-      const fileSystem = createFileSystem({
-        ignorePatterns: DEFAULT_IGNORE_PATTERNS,
-      });
-      const metaStore = new MetaStore();
+      // Ensure grammars are present before indexing (silent if already exist)
+      await ensureGrammars(console.log, { silent: true });
 
       const { spinner, onProgress } = createIndexingSpinner(
-        indexRoot,
+        projectRoot,
         "Indexing...",
       );
       try {
-        try {
-          await store.retrieve(storeId);
-        } catch {
-          await store.create({
-            name: storeId,
-            description: "osgrep local index",
-          });
-        }
-        const result = await initialSync(
-          store,
-          fileSystem,
-          storeId,
-          indexRoot,
-          options.dryRun,
+        const result = await initialSync({
+          projectRoot,
+          dryRun: options.dryRun,
+          reset: options.reset,
           onProgress,
-          metaStore,
-        );
+        });
 
         if (options.dryRun) {
           spinner.succeed(
             `Dry run complete (${result.processed}/${result.total}) • would have indexed ${result.indexed}`,
           );
-          if (PROFILE_ENABLED && typeof store.getProfile === "function") {
-            console.log("[profile] local store:", store.getProfile());
-          }
           console.log(
             formatDryRunSummary(result, {
               actionDescription: "would have indexed",
               includeTotal: true,
             }),
           );
-          await gracefulExit();
           return;
         }
 
-        // Wait for all indexing to complete
-        while (true) {
-          const info = await store.getInfo(storeId);
-          spinner.text = `Indexing ${info.counts.pending + info.counts.in_progress} file(s)`;
-          if (info.counts.pending === 0 && info.counts.in_progress === 0) {
-            break;
-          }
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-        }
+        spinner.text = "Building search index (FTS)...";
+        await vectorDb.createFTSIndex();
 
+        const failedSuffix =
+          result.failedFiles > 0 ? ` • ${result.failedFiles} failed` : "";
         spinner.succeed(
-          `Indexing complete (${result.processed}/${result.total}) • indexed ${result.indexed}`,
+          `Indexing complete (${result.processed}/${result.total}) • indexed ${result.indexed}${failedSuffix}`,
         );
-        if (PROFILE_ENABLED && typeof store.getProfile === "function") {
-          console.log("[profile] local store:", store.getProfile());
-        }
       } catch (e) {
         spinner.fail("Indexing failed");
         throw e;
-      } finally {
-        // Always clean up the store
-        if (store && typeof store.close === "function") {
-          try {
-            await store.close();
-          } catch (err) {
-            console.error("Failed to close store:", err);
-          }
-        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       console.error("Failed to index:", message);
       process.exitCode = 1;
-      await gracefulExit(1);
+    } finally {
+      if (vectorDb) {
+        try {
+          await vectorDb.close();
+        } catch (err) {
+          console.error("Failed to close VectorDB:", err);
+        }
+      }
+      const code =
+        typeof process.exitCode === "number"
+          ? process.exitCode
+          : process.exitCode === undefined
+            ? 0
+            : 1;
+      await gracefulExit(code);
     }
-    await gracefulExit();
   });

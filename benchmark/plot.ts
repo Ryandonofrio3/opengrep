@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 interface BenchmarkRow {
   query: string;
@@ -9,7 +9,7 @@ interface BenchmarkRow {
   baselineCost: number;
   osgrepTime: number;
   osgrepCost: number;
-  winner: 'baseline' | 'osgrep' | 'tie';
+  winner: "baseline" | "osgrep" | "tie";
 }
 
 interface CumulativeData {
@@ -24,8 +24,8 @@ interface CumulativeData {
 }
 
 function parseCSV(csvPath: string): BenchmarkRow[] {
-  const content = fs.readFileSync(csvPath, 'utf-8');
-  const lines = content.trim().split('\n');
+  const content = fs.readFileSync(csvPath, "utf-8");
+  const lines = content.trim().split("\n");
   const rows: BenchmarkRow[] = [];
 
   // Skip header
@@ -33,7 +33,7 @@ function parseCSV(csvPath: string): BenchmarkRow[] {
     const line = lines[i].trim();
     if (!line) continue;
 
-    const parts = line.split(',').map(p => p.trim());
+    const parts = line.split(",").map((p) => p.trim());
     if (parts.length < 6) continue;
 
     rows.push({
@@ -42,7 +42,10 @@ function parseCSV(csvPath: string): BenchmarkRow[] {
       baselineCost: parseFloat(parts[2]) || 0,
       osgrepTime: parseFloat(parts[3]) || 0,
       osgrepCost: parseFloat(parts[4]) || 0,
-      winner: (parts[5]?.toLowerCase() || 'tie') as 'baseline' | 'osgrep' | 'tie',
+      winner: (parts[5]?.toLowerCase() || "tie") as
+        | "baseline"
+        | "osgrep"
+        | "tie",
     });
   }
 
@@ -57,9 +60,9 @@ function calculateCumulative(rows: BenchmarkRow[]): CumulativeData {
       totalBaselineCost: acc.totalBaselineCost + row.baselineCost,
       totalOsgrepCost: acc.totalOsgrepCost + row.osgrepCost,
       queryCount: acc.queryCount + 1,
-      osgrepWins: acc.osgrepWins + (row.winner === 'osgrep' ? 1 : 0),
-      baselineWins: acc.baselineWins + (row.winner === 'baseline' ? 1 : 0),
-      ties: acc.ties + (row.winner === 'tie' ? 1 : 0),
+      osgrepWins: acc.osgrepWins + (row.winner === "osgrep" ? 1 : 0),
+      baselineWins: acc.baselineWins + (row.winner === "baseline" ? 1 : 0),
+      ties: acc.ties + (row.winner === "tie" ? 1 : 0),
     }),
     {
       totalBaselineTime: 0,
@@ -70,7 +73,7 @@ function calculateCumulative(rows: BenchmarkRow[]): CumulativeData {
       osgrepWins: 0,
       baselineWins: 0,
       ties: 0,
-    }
+    },
   );
 }
 
@@ -80,13 +83,26 @@ function generateHTML(cumulative: CumulativeData): string {
   const avgBaselineCost = cumulative.totalBaselineCost / cumulative.queryCount;
   const avgOsgrepCost = cumulative.totalOsgrepCost / cumulative.queryCount;
 
-  const timeImprovement = ((avgBaselineTime - avgOsgrepTime) / avgBaselineTime * 100).toFixed(1);
-  const costImprovement = ((avgBaselineCost - avgOsgrepCost) / avgBaselineCost * 100).toFixed(1);
-  const osgrepWinRate = ((cumulative.osgrepWins / cumulative.queryCount) * 100).toFixed(0);
+  const timeImprovement = (
+    ((avgBaselineTime - avgOsgrepTime) / avgBaselineTime) *
+    100
+  ).toFixed(1);
+  const costImprovement = (
+    ((avgBaselineCost - avgOsgrepCost) / avgBaselineCost) *
+    100
+  ).toFixed(1);
+  const osgrepWinRate = (
+    (cumulative.osgrepWins / cumulative.queryCount) *
+    100
+  ).toFixed(0);
 
   const maxTime = Math.max(avgBaselineTime, avgOsgrepTime);
   const maxCost = Math.max(avgBaselineCost, avgOsgrepCost);
-  const maxWins = Math.max(cumulative.osgrepWins, cumulative.baselineWins, cumulative.ties);
+  const maxWins = Math.max(
+    cumulative.osgrepWins,
+    cumulative.baselineWins,
+    cumulative.ties,
+  );
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -327,8 +343,8 @@ function generateHTML(cumulative: CumulativeData): string {
         <div class="stat-label">Total Cost</div>
         <div class="stat-number">$${cumulative.totalOsgrepCost.toFixed(2)}</div>
         <div class="stat-sub">vs $${cumulative.totalBaselineCost.toFixed(2)} baseline</div>
-        <div class="badge ${parseFloat(costImprovement) < 0 ? 'neutral' : ''}">
-          ${parseFloat(costImprovement) >= 0 ? costImprovement + '% cheaper' : Math.abs(parseFloat(costImprovement)).toFixed(1) + '% more'}
+        <div class="badge ${parseFloat(costImprovement) < 0 ? "neutral" : ""}">
+          ${parseFloat(costImprovement) >= 0 ? `${costImprovement}% cheaper` : `${Math.abs(parseFloat(costImprovement)).toFixed(1)}% more`}
         </div>
       </div>
 
@@ -346,12 +362,12 @@ function generateHTML(cumulative: CumulativeData): string {
         <div class="bar-chart">
           <div class="bar-col">
             <div class="bar-value">${avgBaselineTime.toFixed(1)}s</div>
-            <div class="bar baseline" style="height: ${(avgBaselineTime / maxTime * 100).toFixed(1)}%"></div>
+            <div class="bar baseline" style="height: ${((avgBaselineTime / maxTime) * 100).toFixed(1)}%"></div>
             <div class="bar-label">Baseline</div>
           </div>
           <div class="bar-col">
             <div class="bar-value">${avgOsgrepTime.toFixed(1)}s</div>
-            <div class="bar osgrep" style="height: ${(avgOsgrepTime / maxTime * 100).toFixed(1)}%"></div>
+            <div class="bar osgrep" style="height: ${((avgOsgrepTime / maxTime) * 100).toFixed(1)}%"></div>
             <div class="bar-label">osgrep</div>
           </div>
         </div>
@@ -362,12 +378,12 @@ function generateHTML(cumulative: CumulativeData): string {
         <div class="bar-chart">
           <div class="bar-col">
             <div class="bar-value">$${avgBaselineCost.toFixed(3)}</div>
-            <div class="bar baseline" style="height: ${(avgBaselineCost / maxCost * 100).toFixed(1)}%"></div>
+            <div class="bar baseline" style="height: ${((avgBaselineCost / maxCost) * 100).toFixed(1)}%"></div>
             <div class="bar-label">Baseline</div>
           </div>
           <div class="bar-col">
             <div class="bar-value">$${avgOsgrepCost.toFixed(3)}</div>
-            <div class="bar osgrep" style="height: ${(avgOsgrepCost / maxCost * 100).toFixed(1)}%"></div>
+            <div class="bar osgrep" style="height: ${((avgOsgrepCost / maxCost) * 100).toFixed(1)}%"></div>
             <div class="bar-label">osgrep</div>
           </div>
         </div>
@@ -378,18 +394,22 @@ function generateHTML(cumulative: CumulativeData): string {
         <div class="bar-chart">
           <div class="bar-col">
             <div class="bar-value">${cumulative.baselineWins}</div>
-            <div class="bar baseline" style="height: ${(cumulative.baselineWins / maxWins * 100).toFixed(1)}%"></div>
+            <div class="bar baseline" style="height: ${((cumulative.baselineWins / maxWins) * 100).toFixed(1)}%"></div>
             <div class="bar-label">Baseline</div>
           </div>
-          ${cumulative.ties > 0 ? `
+          ${
+            cumulative.ties > 0
+              ? `
           <div class="bar-col">
             <div class="bar-value">${cumulative.ties}</div>
-            <div class="bar tie" style="height: ${(cumulative.ties / maxWins * 100).toFixed(1)}%"></div>
+            <div class="bar tie" style="height: ${((cumulative.ties / maxWins) * 100).toFixed(1)}%"></div>
             <div class="bar-label">Ties</div>
-          </div>` : ''}
+          </div>`
+              : ""
+          }
           <div class="bar-col">
             <div class="bar-value">${cumulative.osgrepWins}</div>
-            <div class="bar osgrep" style="height: ${(cumulative.osgrepWins / maxWins * 100).toFixed(1)}%"></div>
+            <div class="bar osgrep" style="height: ${((cumulative.osgrepWins / maxWins) * 100).toFixed(1)}%"></div>
             <div class="bar-label">osgrep</div>
           </div>
         </div>
@@ -408,10 +428,12 @@ function main() {
   const args = process.argv.slice(2);
 
   if (args.length === 0) {
-    console.error('Usage: ts-node generate-benchmark.ts <path-to-csv>');
-    console.error('');
-    console.error('CSV format:');
-    console.error('Query,Baseline Time (s),Baseline Cost ($),osgrep Time (s),osgrep Cost ($),Winner');
+    console.error("Usage: ts-node generate-benchmark.ts <path-to-csv>");
+    console.error("");
+    console.error("CSV format:");
+    console.error(
+      "Query,Baseline Time (s),Baseline Cost ($),osgrep Time (s),osgrep Cost ($),Winner",
+    );
     process.exit(1);
   }
 
@@ -427,7 +449,7 @@ function main() {
   console.log(`Parsed ${rows.length} benchmark queries`);
 
   const cumulative = calculateCumulative(rows);
-  console.log('Calculating cumulative metrics...');
+  console.log("Calculating cumulative metrics...");
 
   // Calculate averages for logging
   const avgBaselineTime = cumulative.totalBaselineTime / cumulative.queryCount;
@@ -437,16 +459,22 @@ function main() {
 
   const html = generateHTML(cumulative);
 
-  const outputPath = path.join(path.dirname(csvPath), 'benchmark-results.html');
-  fs.writeFileSync(outputPath, html, 'utf-8');
+  const outputPath = path.join(path.dirname(csvPath), "benchmark-results.html");
+  fs.writeFileSync(outputPath, html, "utf-8");
 
   console.log(`✓ Benchmark visualization generated: ${outputPath}`);
-  console.log('');
-  console.log('Summary:');
+  console.log("");
+  console.log("Summary:");
   console.log(`  Queries: ${cumulative.queryCount}`);
-  console.log(`  Avg time improvement: ${((avgBaselineTime - avgOsgrepTime) / avgBaselineTime * 100).toFixed(1)}%`);
-  console.log(`  Avg cost change: ${((avgBaselineCost - avgOsgrepCost) / avgBaselineCost * 100).toFixed(1)}%`);
-  console.log(`  osgrep wins: ${cumulative.osgrepWins}/${cumulative.queryCount} (${((cumulative.osgrepWins / cumulative.queryCount) * 100).toFixed(0)}%)`);
+  console.log(
+    `  Avg time improvement: ${(((avgBaselineTime - avgOsgrepTime) / avgBaselineTime) * 100).toFixed(1)}%`,
+  );
+  console.log(
+    `  Avg cost change: ${(((avgBaselineCost - avgOsgrepCost) / avgBaselineCost) * 100).toFixed(1)}%`,
+  );
+  console.log(
+    `  osgrep wins: ${cumulative.osgrepWins}/${cumulative.queryCount} (${((cumulative.osgrepWins / cumulative.queryCount) * 100).toFixed(0)}%)`,
+  );
 }
 
 main();

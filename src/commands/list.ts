@@ -1,8 +1,8 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { Command } from "commander";
-import { gracefulExit } from "../lib/exit";
+import { gracefulExit } from "../lib/utils/exit";
+import { ensureProjectPaths, findProjectRoot } from "../lib/utils/project-root";
 
 const style = {
   bold: (s: string) => `\x1b[1m${s}\x1b[22m`,
@@ -10,9 +10,6 @@ const style = {
   green: (s: string) => `\x1b[32m${s}\x1b[39m`,
 };
 
-/**
- * Formats a byte size into a human-readable string
- */
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -21,9 +18,6 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-/**
- * Formats a date to a relative time string
- */
 function formatDate(date: Date): string {
   const now = new Date();
   const diff = now.getTime() - date.getTime();
@@ -38,12 +32,8 @@ function formatDate(date: Date): string {
   return "just now";
 }
 
-/**
- * Gets the size of a directory recursively
- */
 function getDirectorySize(dirPath: string): number {
   let totalSize = 0;
-
   try {
     const items = fs.readdirSync(dirPath);
     for (const item of items) {
@@ -56,86 +46,38 @@ function getDirectorySize(dirPath: string): number {
         totalSize += stats.size;
       }
     }
-  } catch {
-    // Ignore errors
-  }
+  } catch {}
 
   return totalSize;
 }
 
 export const list = new Command("list")
-  .description("List all osgrep stores and their metadata")
+  .description("Show the current project's .osgrep contents")
   .action(async () => {
-    const dataDir = path.join(os.homedir(), ".osgrep", "data");
+    const projectRoot = findProjectRoot(process.cwd()) ?? process.cwd();
+    const paths = ensureProjectPaths(projectRoot);
 
-    // Check if data directory exists
-    if (!fs.existsSync(dataDir)) {
-      console.log("No stores found.");
+    const entries = [
+      { label: "LanceDB", dir: paths.lancedbDir },
+      { label: "Cache", dir: paths.cacheDir },
+    ];
+
+    console.log(`\n${style.bold("Project")}: ${style.green(projectRoot)}`);
+    console.log(`${style.dim("Data directory")}: ${paths.osgrepDir}\n`);
+
+    for (const entry of entries) {
+      if (!fs.existsSync(entry.dir)) {
+        console.log(`${entry.label}: ${style.dim("not created yet")}`);
+        continue;
+      }
+      const stats = fs.statSync(entry.dir);
+      const size = getDirectorySize(entry.dir);
       console.log(
-        `\nRun ${style.green("osgrep index")} in a repository to create your first store.`,
+        `${entry.label}: ${style.green(formatSize(size))} ${style.dim(
+          `(updated ${formatDate(stats.mtime)})`,
+        )}`,
       );
-      await gracefulExit();
-      return;
     }
 
-    // Read all subdirectories (these are stores)
-    let stores: string[] = [];
-    try {
-      const items = fs.readdirSync(dataDir);
-      stores = items.filter((item) => {
-        const itemPath = path.join(dataDir, item);
-        return fs.statSync(itemPath).isDirectory();
-      });
-    } catch (error) {
-      console.error("Failed to read stores:", error);
-      await gracefulExit(1);
-    }
-
-    if (stores.length === 0) {
-      console.log("No stores found.");
-      console.log(
-        `\nRun ${style.green("osgrep index")} in a repository to create your first store.`,
-      );
-      await gracefulExit();
-      return;
-    }
-
-    // Display header
-    console.log(
-      `\n${style.bold(`Found ${stores.length} store(s):`)} ${style.dim(`(in ~/.osgrep/data)`)}\n`,
-    );
-
-    // Collect and display store info
-    const storeInfo = stores.map((storeName) => {
-      const storePath = path.join(dataDir, storeName);
-      const stats = fs.statSync(storePath);
-      const size = getDirectorySize(storePath);
-
-      return {
-        name: storeName,
-        size,
-        modified: stats.mtime,
-      };
-    });
-
-    // Sort by most recently modified
-    storeInfo.sort((a, b) => b.modified.getTime() - a.modified.getTime());
-
-    // Display stores
-    for (const store of storeInfo) {
-      const nameDisplay = style.green(style.bold(store.name));
-      const sizeDisplay = style.dim(formatSize(store.size));
-      const dateDisplay = style.dim(formatDate(store.modified));
-
-      console.log(`  ${nameDisplay}`);
-      console.log(`    Size: ${sizeDisplay} • Modified: ${dateDisplay}`);
-      console.log();
-    }
-
-    console.log(style.dim(`To clean up a store: rm -rf ~/.osgrep/data/<store-name>`));
-    console.log(
-      style.dim(`To use a specific store: osgrep --store <store-name> <query>`),
-    );
     await gracefulExit();
   });
-

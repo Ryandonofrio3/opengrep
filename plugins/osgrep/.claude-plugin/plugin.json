@@ -10,11 +10,5 @@
   "homepage": "https://github.com/ryandonofrio/osgrep",
   "repository": "https://github.com/ryandonofrio/osgrep",
   "license": "Apache-2.0",
-  "keywords": [
-    "search",
-    "semantic",
-    "grep",
-    "code-search",
-    "semantic-search"
-  ]
+  "keywords": ["search", "semantic", "grep", "code-search", "semantic-search"]
 }

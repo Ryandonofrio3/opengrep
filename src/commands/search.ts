@@ -1,25 +1,19 @@
-import { join, normalize } from "node:path";
+import * as path from "node:path";
 import type { Command } from "commander";
 import { Command as CommanderCommand } from "commander";
-import { createFileSystem, createStore } from "../lib/context";
-import { ensureSetup } from "../lib/setup-helpers";
-import type { FileMetadata, SearchResponse, Store } from "../lib/store";
-import { DEFAULT_IGNORE_PATTERNS } from "../lib/ignore-patterns";
-import { ensureStoreExists, isStoreEmpty } from "../lib/store-helpers";
-import { getAutoStoreId } from "../lib/store-resolver";
+import { ensureGrammars } from "../lib/index/grammar-loader";
 import {
   createIndexingSpinner,
   formatDryRunSummary,
-} from "../lib/sync-helpers";
-import {
-  initialSync,
-  MetaStore,
-  readServerLock,
-} from "../utils";
-import { formatTextResults, type TextResult } from "../lib/formatter";
-import { gracefulExit } from "../lib/exit";
-
-
+} from "../lib/index/sync-helpers";
+import { initialSync } from "../lib/index/syncer";
+import { Searcher } from "../lib/search/searcher";
+import { ensureSetup } from "../lib/setup/setup-helpers";
+import type { FileMetadata, SearchResponse } from "../lib/store/types";
+import { VectorDB } from "../lib/store/vector-db";
+import { gracefulExit } from "../lib/utils/exit";
+import { formatTextResults, type TextResult } from "../lib/utils/formatter";
+import { ensureProjectPaths, findProjectRoot } from "../lib/utils/project-root";
 
 function toTextResults(data: SearchResponse["data"]): TextResult[] {
   return data.map((r) => {
@@ -49,11 +43,7 @@ export const search: Command = new CommanderCommand("search")
     "10",
   )
   .option("-c, --content", "Show full chunk content instead of snippets", false)
-  .option(
-    "--per-file <n>",
-    "Number of matches to show per file",
-    "1",
-  )
+  .option("--per-file <n>", "Number of matches to show per file", "1")
   .option("--scores", "Show relevance scores", false)
   .option("--compact", "Show file paths only", false)
   .option("--plain", "Disable ANSI colors and use simpler formatting", false)
@@ -62,18 +52,13 @@ export const search: Command = new CommanderCommand("search")
     "Syncs the local files to the store before searching",
     false,
   )
-  .option(
-    "-d, --dry-run",
-    "Dry run the search process (no actual file syncing)",
-    false,
-  )
+  .option("-d, --dry-run", "Show what would be indexed without actually indexing", false)
   .argument("<pattern>", "The pattern to search for")
   .argument("[path]", "The path to search in")
   .allowUnknownOption(true)
   .allowExcessArguments(true)
   .action(async (pattern, exec_path, _options, cmd) => {
     const options: {
-      store?: string;
       m: string;
       content: boolean;
       perFile: string;
@@ -89,253 +74,116 @@ export const search: Command = new CommanderCommand("search")
     }
 
     const root = process.cwd();
+    let vectorDb: VectorDB | null = null;
 
-    // Try server fast path for standard text search
-    async function tryServerFastPath(): Promise<boolean> {
-      const lock = await readServerLock(root);
-      if (!lock || !lock.authToken) return false;
-
-      const authHeader = { Authorization: `Bearer ${lock.authToken}` };
-
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 100);
-      try {
-        const health = await fetch(`http://localhost:${lock.port}/health`, {
-          signal: controller.signal,
-          headers: authHeader,
-        });
-        if (!health.ok) return false;
-      } catch (_err) {
-        return false;
-      } finally {
-        clearTimeout(timeout);
-      }
-
-      try {
-        const searchRes = await fetch(
-          `http://localhost:${lock.port}/search`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              ...authHeader,
-            },
-            body: JSON.stringify({
-              query: pattern,
-              limit: parseInt(options.m, 10),
-              rerank: true,
-              path: exec_path ?? "",
-            }),
-          },
-        );
-        if (!searchRes.ok) return false;
-        const payload = await searchRes.json();
-
-        // Check for the status flag
-        if (payload.status === "indexing") {
-          const pct = payload.progress ?? 0;
-          console.error(
-            `⚠️  osgrep is currently indexing (${pct}% complete). Results may be partial.\n`,
-          );
-        }
-
-        // Auto-detect plain mode if not in TTY (e.g. piped to agent)
-        const isTTY = process.stdout.isTTY;
-        const shouldBePlain = options.plain || !isTTY;
-
-        // Rehydrate server results to match local store shape expected by formatTextResults.
-        const rehydratedResults = (payload.results ?? []).map((r: any) => ({
-          score: typeof r.score === "number" ? r.score : 0,
-          text: r.content ?? r.snippet ?? "",
-          metadata: {
-            path: typeof r.path === "string" ? r.path : "Unknown path",
-            is_anchor: r.is_anchor === true,
-          },
-          generated_metadata: {
-            type: r.chunk_type,
-            start_line: typeof r.start_line === "number" ? r.start_line : 0,
-            num_lines:
-              typeof r.num_lines === "number" ? r.num_lines : undefined,
-          },
-        }));
-
-        const mappedResults: TextResult[] = toTextResults(
-          rehydratedResults as SearchResponse["data"],
-        );
-
-        const output = formatTextResults(mappedResults, pattern, root, {
-          isPlain: shouldBePlain,
-          compact: options.compact,
-          content: options.content,
-        });
-        console.log(output);
-        return true;
-      } catch (_err) {
-        return false;
-      }
-    }
-
-    const fast = await tryServerFastPath();
-    if (fast) {
-      return;
-    }
-
-    let store: Store | null = null;
     try {
       await ensureSetup();
-      store = await createStore();
+      const searchRoot = exec_path ? path.resolve(exec_path) : root;
+      const projectRoot = findProjectRoot(searchRoot) ?? searchRoot;
+      const paths = ensureProjectPaths(projectRoot);
+      vectorDb = new VectorDB(paths.lancedbDir);
+      const searcher = new Searcher(vectorDb);
 
-      // Auto-detect store ID if not explicitly provided
-      const storeId = options.store || getAutoStoreId(root);
+      const hasRows = await vectorDb.hasAnyRows();
+      const needsSync = options.sync || !hasRows;
 
-      await ensureStoreExists(store, storeId);
-      const autoSync =
-        options.sync || (await isStoreEmpty(store, storeId));
-      let didSync = false;
-
-      if (autoSync) {
-        const fileSystem = createFileSystem({
-          ignorePatterns: DEFAULT_IGNORE_PATTERNS,
-        });
-        const metaStore = new MetaStore();
-
-        // Human/Agent mode
+      if (needsSync) {
         const isTTY = process.stdout.isTTY;
         let abortController: AbortController | undefined;
         let signal: AbortSignal | undefined;
 
-        // If non-interactive (Agent), enforce a timeout to prevent hanging
         if (!isTTY) {
           abortController = new AbortController();
           signal = abortController.signal;
           setTimeout(() => {
             abortController?.abort();
-          }, 10000); // 10s timeout
+          }, 10000);
         }
 
-        // Show spinner and progress
         const { spinner, onProgress } = createIndexingSpinner(
-          root,
+          projectRoot,
           options.sync ? "Indexing..." : "Indexing repository (first run)...",
         );
 
         try {
-          const result = await initialSync(
-            store,
-            fileSystem,
-            storeId,
-            root,
-            options.dryRun,
+          await ensureGrammars(console.log, { silent: true });
+          const result = await initialSync({
+            projectRoot,
+            dryRun: options.dryRun,
             onProgress,
-            metaStore,
             signal,
-          );
+          });
 
           if (signal?.aborted) {
             spinner.warn(
               `Indexing timed out (${result.processed}/${result.total}). Results may be partial.`,
             );
-          } else {
-            while (true) {
-              const info = await store.getInfo(storeId);
-              spinner.text = `Indexing ${info.counts.pending + info.counts.in_progress} file(s)`;
-              if (
-                info.counts.pending === 0 &&
-                info.counts.in_progress === 0
-              ) {
-                break;
-              }
-              await new Promise((resolve) => setTimeout(resolve, 1000));
-            }
-            spinner.succeed(
-              `Indexing complete (${result.processed}/${result.total}) • indexed ${result.indexed}`,
-            );
           }
-          didSync = true;
 
           if (options.dryRun) {
+            spinner.succeed(
+              `Dry run complete (${result.processed}/${result.total}) • would have indexed ${result.indexed}`,
+            );
             console.log(
               formatDryRunSummary(result, {
                 actionDescription: "would have indexed",
+                includeTotal: true,
               }),
             );
-            await gracefulExit();
+            return;
           }
-        } catch (err) {
+
+          await vectorDb.createFTSIndex();
+          const failedSuffix =
+            result.failedFiles > 0 ? ` • ${result.failedFiles} failed` : "";
+          spinner.succeed(
+            `${options.sync ? "Indexing" : "Initial indexing"} complete (${result.processed}/${result.total}) • indexed ${result.indexed}${failedSuffix}`,
+          );
+        } catch (e) {
           spinner.fail("Indexing failed");
-          throw err;
+          throw e;
         }
       }
 
-      const search_path = exec_path?.startsWith("/")
-        ? exec_path
-        : normalize(join(root, exec_path ?? ""));
-
-      // Execute Search
-      const results = await store.search(
-        storeId,
+      const searchResult = await searcher.search(
         pattern,
         parseInt(options.m, 10),
         { rerank: true },
-        {
-          all: [
-            {
-              key: "path",
-              operator: "starts_with",
-              value: search_path,
-            },
-          ],
-        },
+        undefined,
+        exec_path ? path.relative(projectRoot, path.resolve(exec_path)) : "",
       );
 
-      // Hint if no results found
-      if (results.data.length === 0) {
-        if (!didSync) {
-          try {
-            const info = await store.getInfo(storeId);
-            if (info.counts.pending === 0 && info.counts.in_progress === 0) {
-              // Store exists but no results - might need re-indexing if files changed
-              console.log(
-                "No results found. If files have changed, you can re-index with 'osgrep index' or 'osgrep search --sync \"<query>\"'.\n",
-              );
-            }
-          } catch {
-            console.log(
-              "No results found. The repository will be automatically indexed on your next search.\n",
-            );
-          }
-        }
-        await gracefulExit();
+      if (!searchResult.data.length) {
+        console.log("No matches found.");
         return;
       }
 
-      // Auto-detect plain mode if not in TTY (e.g. piped to agent)
       const isTTY = process.stdout.isTTY;
       const shouldBePlain = options.plain || !isTTY;
 
-      // Render Output
-      const mappedResults: TextResult[] = toTextResults(results.data);
-      const output = formatTextResults(mappedResults, pattern, root, {
+      const mappedResults = toTextResults(searchResult.data);
+
+      const output = formatTextResults(mappedResults, pattern, projectRoot, {
         isPlain: shouldBePlain,
         compact: options.compact,
         content: options.content,
+        perFile: parseInt(options.perFile, 10),
+        showScores: options.scores,
       });
 
       console.log(output);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      console.error("Failed to search:", message);
+      console.error("Search failed:", message);
       process.exitCode = 1;
-      await gracefulExit(1);
     } finally {
-      // Always clean up the store
-      if (store && typeof store.close === "function") {
+      if (vectorDb) {
         try {
-          await store.close();
+          await vectorDb.close();
         } catch (err) {
-          console.error("Failed to close store:", err);
+          console.error("Failed to close VectorDB:", err);
         }
       }
+      await gracefulExit();
     }
-    await gracefulExit();
   });

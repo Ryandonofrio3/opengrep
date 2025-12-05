@@ -1,6 +1,6 @@
-const fs = require("fs");
-const path = require("path");
-const { spawn } = require("child_process");
+const fs = require("node:fs");
+const _path = require("node:path");
+const { spawn } = require("node:child_process");
 
 function readPayload() {
   try {
@@ -28,7 +28,7 @@ function main() {
     hookSpecificOutput: {
       hookEventName: "SessionStart",
       additionalContext:
-        "osgrep serve started; prefer `osgrep \"<complete question>\"` over grep (plain output is agent-friendly).",
+        'osgrep serve started; prefer `osgrep "<complete question>"` over grep (plain output is agent-friendly).',
     },
   };
   process.stdout.write(JSON.stringify(response));

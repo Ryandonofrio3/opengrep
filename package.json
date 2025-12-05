@@ -15,6 +15,7 @@
     "osgrep": "dist/index.js"
   },
   "scripts": {
+    "prebuild": "mkdir -p dist",
     "build": "tsc",
     "postbuild": "chmod +x dist/index.js",
     "dev": "npx tsc && node dist/index.js",
@@ -55,10 +56,13 @@
     "cli-highlight": "^2.1.11",
     "commander": "^14.0.2",
     "dotenv": "^17.2.3",
+    "fast-glob": "^3.3.3",
     "ignore": "^5.0.0",
-    "onnxruntime-node": "^1.23.2",
+    "lmdb": "^3.4.4",
+    "onnxruntime-node": "1.21.0",
     "ora": "^5.4.1",
-    "p-limit": "^3.1.0",
+    "piscina": "^5.1.4",
+    "simsimd": "^6.5.5",
     "uuid": "^9.0.1",
     "web-tree-sitter": "^0.25.10",
     "zod": "^4.1.12"
@@ -68,6 +72,7 @@
     "@biomejs/biome": "2.3.4",
     "@types/node": "^24.10.1",
     "@types/uuid": "^9.0.8",
+    "node-gyp": "^12.1.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
     "vitest": "^1.6.0"

@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import { Command } from "commander";
-import { gracefulExit } from "../lib/exit";
 
 function runClaudeCommand(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -34,7 +33,9 @@ async function installPlugin() {
     console.log(
       "3. Claude will use osgrep for semantic code search automatically",
     );
-    console.log("4. You can also use `osgrep` commands directly in your terminal");
+    console.log(
+      "4. You can also use `osgrep` commands directly in your terminal",
+    );
   } catch (error) {
     console.error("❌ Error installing plugin:");
     console.error(error);
@@ -47,7 +48,6 @@ async function installPlugin() {
       "- Check the Claude Code documentation: https://code.claude.com/docs",
     );
     process.exitCode = 1;
-    await gracefulExit(1);
   }
 }
 
@@ -55,5 +55,4 @@ export const installClaudeCode = new Command("install-claude-code")
   .description("Install the Claude Code plugin")
   .action(async () => {
     await installPlugin();
-    await gracefulExit();
   });

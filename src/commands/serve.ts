@@ -1,502 +1,289 @@
+import { spawn } from "node:child_process";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
-import { randomUUID } from "node:crypto";
 import { Command } from "commander";
-import chokidar, { type FSWatcher } from "chokidar";
-import { createFileSystem, createStore } from "../lib/context";
-import { ensureSetup } from "../lib/setup-helpers";
-import { ensureStoreExists, isStoreEmpty } from "../lib/store-helpers";
-import { getAutoStoreId } from "../lib/store-resolver";
-import type { Store } from "../lib/store";
-import { DEFAULT_IGNORE_PATTERNS } from "../lib/ignore-patterns"
+import { PATHS } from "../config";
+import { ensureGrammars } from "../lib/index/grammar-loader";
+import { createIndexingSpinner } from "../lib/index/sync-helpers";
+import { initialSync } from "../lib/index/syncer";
+import { Searcher } from "../lib/search/searcher";
+import { ensureSetup } from "../lib/setup/setup-helpers";
+import { VectorDB } from "../lib/store/vector-db";
+import { gracefulExit } from "../lib/utils/exit";
+import { ensureProjectPaths, findProjectRoot } from "../lib/utils/project-root";
 import {
-  clearServerLock,
-  computeBufferHash,
-  debounce,
-  formatDenseSnippet,
-  indexFile,
-  initialSync,
-  isIndexablePath,
-  MetaStore,
-  preparedChunksToVectors,
-  readServerLock,
-  writeServerLock,
-} from "../utils";
-
-type PendingAction = "upsert" | "delete";
-
-// Global State for the Server
-let indexState = {
-  isIndexing: false,
-  indexed: 0,
-  processed: 0,
-  total: 0,
-};
-
-const MAX_REQUEST_BYTES = 10 * 1024 * 1024;
-
-// Memory monitoring configuration
-const MEMORY_CHECK_INTERVAL_MS = 30_000; // Check every 30 seconds
-const MEMORY_WARNING_THRESHOLD_MB = Number.parseInt(
-  process.env.OSGREP_MEMORY_WARNING_MB ||
-  String(Math.floor((os.totalmem() / 1024 / 1024) * 0.6)), // 60% of system RAM
-  10
-);
-const MEMORY_RESTART_THRESHOLD_MB = Number.parseInt(
-  process.env.OSGREP_MEMORY_RESTART_MB ||
-  String(Math.floor((os.totalmem() / 1024 / 1024) * 0.75)), // 75% of system RAM
-  10
-);
-
-function toDenseResults(
-  storeRoot: string,
-  data: Array<{
-    score: number;
-    text?: string | null;
-    metadata?: Record<string, unknown>;
-    generated_metadata?: { start_line?: number | null; type?: string | null };
-  }>,
-) {
-  const root = path.resolve(storeRoot);
-  return data.map((item) => {
-    const rawPath =
-      typeof item.metadata?.path === "string"
-        ? (item.metadata.path as string)
-        : "";
-    const relPath = rawPath ? path.relative(root, rawPath) || rawPath : "unknown";
-    const snippet = formatDenseSnippet(item.text ?? "");
-    return {
-      path: relPath,
-      score: Number(item.score.toFixed(3)),
-      content: snippet,
-      chunk_type: item.generated_metadata?.type ?? undefined,
-    };
-  });
-}
-
-async function createWatcher(
-  store: Store,
-  storeId: string,
-  root: string,
-  metaStore: MetaStore,
-): Promise<FSWatcher> {
-  const fileSystem = createFileSystem({
-    ignorePatterns: [...DEFAULT_IGNORE_PATTERNS, ".osgrep/**"],
-  });
-
-  fileSystem.loadOsgrepignore(root);
-
-  const pending = new Map<string, PendingAction>();
-
-  const processPending = debounce(async () => {
-    const actions = Array.from(pending.entries());
-    pending.clear();
-    for (const [filePath, action] of actions) {
-      if (action === "delete") {
-        try {
-          await store.deleteFile(storeId, filePath);
-          metaStore.delete(filePath);
-          await metaStore.save();
-        } catch (err) {
-          console.error("Failed to delete file from store:", err);
-        }
-        continue;
-      }
-
-      if (
-        fileSystem.isIgnored(filePath, root) ||
-        !isIndexablePath(filePath)
-      ) {
-        continue;
-      }
-
-      try {
-        const buffer = await fs.promises.readFile(filePath);
-        if (buffer.length === 0) continue;
-        const hash = computeBufferHash(buffer);
-        const { chunks, indexed: didIndex } = await indexFile(
-          store,
-          storeId,
-          filePath,
-          path.basename(filePath),
-          metaStore,
-          undefined,
-          buffer,
-          hash,
-        );
-        if (didIndex) {
-          if (chunks.length > 0) {
-            const vectors = await preparedChunksToVectors(chunks);
-            await store.insertBatch(storeId, vectors);
-          }
-          metaStore.set(filePath, hash);
-          await metaStore.save();
-        }
-      } catch (err) {
-        console.error("Failed to index changed file:", err);
-      }
-    }
-  }, 300);
-
-  const watcher = chokidar.watch(root, {
-    ignoreInitial: true,
-    persistent: true,
-    ignored: (watchedPath) =>
-      fileSystem.isIgnored(watchedPath.toString(), root) ||
-      watchedPath.toString().includes(`${path.sep}.git${path.sep}`) ||
-      watchedPath.toString().includes(`${path.sep}.osgrep${path.sep}`),
-  });
-
-  watcher
-    .on("add", (filePath) => {
-      pending.set(path.resolve(filePath), "upsert");
-      processPending();
-    })
-    .on("change", (filePath) => {
-      pending.set(path.resolve(filePath), "upsert");
-      processPending();
-    })
-    .on("unlink", (filePath) => {
-      pending.set(path.resolve(filePath), "delete");
-      processPending();
-    });
-
-  return watcher;
-}
-
-async function respondJson(
-  res: http.ServerResponse,
-  status: number,
-  payload: object,
-) {
-  res.statusCode = status;
-  res.setHeader("Content-Type", "application/json");
-  res.end(JSON.stringify(payload));
-}
+  getServerForProject,
+  isProcessRunning,
+  listServers,
+  registerServer,
+  unregisterServer,
+} from "../lib/utils/server-registry";
 
 export const serve = new Command("serve")
   .description("Run osgrep as a background server with live indexing")
-  .option("-p, --port <port>", "Port to listen on", process.env.OSGREP_PORT || "4444")
-  .option("--parent-pid <pid>", "Parent process ID to watch for auto-shutdown")
+  .option(
+    "-p, --port <port>",
+    "Port to listen on",
+    process.env.OSGREP_PORT || "4444",
+  )
+  .option("-b, --background", "Run in background", false)
   .action(async (_args, cmd) => {
-    const options: { port: string; store?: string; parentPid?: string } = cmd.optsWithGlobals();
+    const options: { port: string; background: boolean } =
+      cmd.optsWithGlobals();
     const port = parseInt(options.port, 10);
-    const parentPid = options.parentPid ? parseInt(options.parentPid, 10) : null;
-    const root = process.cwd();
-    const authToken = randomUUID();
+    const projectRoot = findProjectRoot(process.cwd()) ?? process.cwd();
 
-    let store: Store | null = null;
-    let watcher: FSWatcher | null = null;
-    let server: http.Server | null = null;
-    const metaStore = new MetaStore();
-
-    const shutdown = async () => {
-      try {
-        await clearServerLock(root);
-      } catch (err) {
-        console.error("Failed to clear server lock:", err);
-      }
-      try {
-        await watcher?.close();
-      } catch (err) {
-        console.error("Failed to close watcher:", err);
-      }
-      if (store && typeof store.close === "function") {
-        try {
-          await store.close();
-        } catch (err) {
-          console.error("Failed to close store:", err);
-        }
-      }
-      process.exit(0);
-    };
-
-    process.on("SIGINT", shutdown);
-    process.on("SIGTERM", shutdown);
-    process.on("exit", async () => {
-      await clearServerLock(root);
-    });
-
-    if (parentPid && !Number.isNaN(parentPid)) {
-      setInterval(() => {
-        try {
-          process.kill(parentPid, 0);
-        } catch {
-          console.log(`Parent process ${parentPid} died. Shutting down...`);
-          shutdown();
-        }
-      }, 5000).unref();
+    // Check if already running
+    const existing = getServerForProject(projectRoot);
+    if (existing && isProcessRunning(existing.pid)) {
+      console.log(
+        `Server already running for ${projectRoot} (PID: ${existing.pid}, Port: ${existing.port})`,
+      );
+      return;
     }
 
-    // Memory monitoring: Check every 30 seconds and gracefully restart if needed
-    let lastMemoryWarning = 0;
-    const memoryMonitor = setInterval(() => {
-      const memUsage = process.memoryUsage();
-      const rssMb = Math.round(memUsage.rss / 1024 / 1024);
+    if (options.background) {
+      const args = process.argv
+        .slice(2)
+        .filter((arg) => arg !== "-b" && arg !== "--background");
+      const logDir = path.join(PATHS.globalRoot, "logs");
+      fs.mkdirSync(logDir, { recursive: true });
+      const logFile = path.join(logDir, "server.log");
+      const out = fs.openSync(logFile, "a");
+      const err = fs.openSync(logFile, "a");
 
-      // Log warning if above warning threshold (but only once per 5 minutes)
-      if (rssMb > MEMORY_WARNING_THRESHOLD_MB) {
-        const now = Date.now();
-        if (now - lastMemoryWarning > 300_000) { // 5 minutes
-          console.warn(
-            `[osgrep serve] Memory usage high: ${rssMb}MB (warning threshold: ${MEMORY_WARNING_THRESHOLD_MB}MB)`
-          );
-          lastMemoryWarning = now;
-        }
-      }
+      const child = spawn(process.argv[0], [process.argv[1], ...args], {
+        detached: true,
+        stdio: ["ignore", out, err],
+        cwd: process.cwd(),
+        env: { ...process.env, OSGREP_BACKGROUND: "true" },
+      });
+      child.unref();
+      console.log(`Started background server (PID: ${child.pid})`);
+      return;
+    }
 
-      // Graceful restart if above restart threshold
-      if (rssMb > MEMORY_RESTART_THRESHOLD_MB) {
-        console.warn(
-          `[osgrep serve] Memory limit exceeded: ${rssMb}MB > ${MEMORY_RESTART_THRESHOLD_MB}MB. Restarting gracefully...`
-        );
-        clearInterval(memoryMonitor);
-
-        const restart = () => {
-          // Spawn a new server process with the same port and parent PID
-          const { spawn } = require("node:child_process");
-          const args = ["serve", "--port", String(port)];
-          if (parentPid) {
-            args.push("--parent-pid", String(parentPid));
-          }
-
-          const child = spawn(process.execPath, [process.argv[1], ...args], {
-            detached: true,
-            stdio: "inherit",
-          });
-          child.unref();
-
-          console.log(
-            "[osgrep serve] New server started. Shutting down old instance..."
-          );
-          shutdown();
-        };
-
-        // Ensure we release the port before spawning the replacement
-        if (server && typeof server.close === "function") {
-          server.close(restart);
-        } else {
-          restart();
-        }
-      }
-    }, MEMORY_CHECK_INTERVAL_MS).unref();
+    const paths = ensureProjectPaths(projectRoot);
 
     try {
-      await ensureSetup({ silent: true });
-      await metaStore.load();
-      store = await createStore();
-      const storeId = options.store || getAutoStoreId(root);
-      await ensureStoreExists(store, storeId);
+      await ensureSetup();
+      await ensureGrammars(console.log, { silent: true });
 
-      const empty = await isStoreEmpty(store, storeId);
-      if (empty) {
-        const fileSystem = createFileSystem({
-          ignorePatterns: [...DEFAULT_IGNORE_PATTERNS, ".osgrep/**"],
-        });
-        console.log("Store empty, performing initial index (background)...");
+      const vectorDb = new VectorDB(paths.lancedbDir);
+      const searcher = new Searcher(vectorDb);
 
-        // Setup the Progress Callback
-        const onProgress = (info: {
-          processed: number;
-          indexed: number;
-          total: number;
-        }) => {
-          indexState = {
-            isIndexing: info.indexed < info.total,
-            indexed: info.indexed,
-            processed: info.processed,
-            total: info.total,
-          };
-        };
+      // Only show spinner if not in background (or check isTTY)
+      // If spawned in background with stdio ignore, console.log goes nowhere.
+      // But we might want to log to a file in the future.
 
-        // Trigger Sync (Non-blocking / Background)
-        indexState.isIndexing = true;
-        initialSync(
-          store,
-          fileSystem,
-          storeId,
-          root,
-          false,
-          onProgress,
-          metaStore,
-          undefined, // No timeout for server mode
-        )
-          .then(() => {
-            indexState.isIndexing = false;
-            console.log("Background indexing complete.");
-          })
-          .catch((err) => {
-            indexState.isIndexing = false;
-            console.error("Background index failed:", err);
+      if (!process.env.OSGREP_BACKGROUND) {
+        const { spinner, onProgress } = createIndexingSpinner(
+          projectRoot,
+          "Indexing before starting server...",
+        );
+        try {
+          await initialSync({
+            projectRoot,
+            onProgress,
           });
+          await vectorDb.createFTSIndex();
+          spinner.succeed("Initial index ready. Starting server...");
+        } catch (e) {
+          spinner.fail("Indexing failed");
+          throw e;
+        }
       } else {
-        indexState.isIndexing = false;
+        // In background, just sync quietly
+        await initialSync({ projectRoot });
+        await vectorDb.createFTSIndex();
       }
 
-      watcher = await createWatcher(store, storeId, root, metaStore);
-
-      server = http.createServer(async (req, res) => {
-        const rawAuth =
-          typeof req.headers.authorization === "string"
-            ? req.headers.authorization
-            : Array.isArray(req.headers.authorization)
-              ? req.headers.authorization[0]
-              : undefined;
-        const providedToken =
-          rawAuth && rawAuth.startsWith("Bearer ")
-            ? rawAuth.slice("Bearer ".length)
-            : rawAuth;
-        if (providedToken !== authToken) {
-          return respondJson(res, 401, { error: "unauthorized" });
-        }
-
-        if (!req.url) {
-          return respondJson(res, 400, { error: "Invalid request" });
-        }
-
-        const url = new URL(req.url, `http://localhost:${port}`);
-        if (req.method === "GET" && url.pathname === "/health") {
-          return respondJson(res, 200, { status: "ready" });
-        }
-
-        if (req.method === "POST" && url.pathname === "/search") {
-          const contentLengthHeader = req.headers["content-length"];
-          const declaredLength = Array.isArray(contentLengthHeader)
-            ? parseInt(contentLengthHeader[0] ?? "", 10)
-            : contentLengthHeader
-              ? parseInt(contentLengthHeader, 10)
-              : NaN;
-
-          if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BYTES) {
-            return respondJson(res, 413, { error: "payload_too_large" });
+      const server = http.createServer(async (req, res) => {
+        try {
+          if (req.method === "GET" && req.url === "/health") {
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ status: "ok" }));
+            return;
           }
 
-          // Block until initial indexing is complete to prevent race conditions
-          if (indexState.isIndexing) {
-            // We can either wait or return 503. Waiting is better for UX but might timeout.
-            // Let's wait up to 5 seconds, then return 503 if still indexing.
-            const startWait = Date.now();
-            while (indexState.isIndexing) {
-              if (Date.now() - startWait > 5000) {
-                return respondJson(res, 503, {
-                  error: "indexing_in_progress",
-                  message: "Initial indexing in progress. Please try again later.",
-                  progress: Math.round((indexState.processed / indexState.total) * 100)
-                });
-              }
-              await new Promise((resolve) => setTimeout(resolve, 100));
-            }
-          }
+          if (req.method === "POST" && req.url === "/search") {
+            const chunks: Buffer[] = [];
+            let totalSize = 0;
+            let aborted = false;
 
-          let receivedBytes = 0;
-          let rejected = false;
-          const chunks: Buffer[] = [];
-          req.on("data", (c) => {
-            if (rejected) return;
-            receivedBytes += c.length;
-            if (receivedBytes > MAX_REQUEST_BYTES) {
-              rejected = true;
-              respondJson(res, 413, { error: "payload_too_large" });
-              req.destroy();
-              return;
-            }
-            chunks.push(c);
-          });
-          req.on("end", async () => {
-            if (rejected) return;
-            try {
-              const bodyRaw = Buffer.concat(chunks).toString("utf-8");
-              const body = bodyRaw ? JSON.parse(bodyRaw) : {};
-              const query = typeof body.query === "string" ? body.query : "";
-              if (!query) {
-                return respondJson(res, 400, { error: "query is required" });
+            req.on("data", (chunk) => {
+              if (aborted) return;
+              totalSize += chunk.length;
+              if (totalSize > 1_000_000) {
+                aborted = true;
+                res.statusCode = 413;
+                res.setHeader("Content-Type", "application/json");
+                res.end(JSON.stringify({ error: "payload_too_large" }));
+                req.destroy();
+                return;
               }
-              const limit =
-                typeof body.limit === "number" && !Number.isNaN(body.limit)
-                  ? body.limit
-                  : 25;
-              const rerank = body.rerank === false ? false : true;
+              chunks.push(chunk);
+            });
 
-              const searchPath = (() => {
-                if (typeof body.path !== "string" || body.path.length === 0) {
-                  return root;
+            req.on("end", async () => {
+              if (aborted) return;
+              try {
+                const body = chunks.length
+                  ? JSON.parse(Buffer.concat(chunks).toString("utf-8"))
+                  : {};
+                const query = typeof body.query === "string" ? body.query : "";
+                const limit = typeof body.limit === "number" ? body.limit : 10;
+
+                let searchPath = "";
+                if (typeof body.path === "string") {
+                  const resolvedPath = path.resolve(projectRoot, body.path);
+                  const rootPrefix = projectRoot.endsWith(path.sep)
+                    ? projectRoot
+                    : `${projectRoot}${path.sep}`;
+
+                  // Normalize paths for consistency (Windows/Linux)
+                  const normalizedRootPrefix = path.normalize(rootPrefix);
+                  const normalizedResolvedPath = path.normalize(resolvedPath);
+
+                  if (
+                    normalizedResolvedPath !== projectRoot &&
+                    !normalizedResolvedPath.startsWith(normalizedRootPrefix)
+                  ) {
+                    res.statusCode = 400;
+                    res.setHeader("Content-Type", "application/json");
+                    res.end(JSON.stringify({ error: "invalid_path" }));
+                    return;
+                  }
+                  searchPath = path.relative(projectRoot, resolvedPath);
                 }
-                const normalized = path.normalize(
-                  path.isAbsolute(body.path) ? body.path : path.join(root, body.path),
+
+                const result = await searcher.search(
+                  query,
+                  limit,
+                  { rerank: true },
+                  undefined,
+                  searchPath,
                 );
-                const resolvedRoot = path.resolve(root);
-                const resolvedPath = path.resolve(normalized);
 
-                // Prevent path traversal
-                if (
-                  !resolvedPath.startsWith(resolvedRoot + path.sep) &&
-                  resolvedPath !== resolvedRoot
-                ) {
-                  // If they try to escape, just clamp to root or throw.
-                  // For security, let's treat it as root or throw an error.
-                  // Throwing is safer/clearer that it was rejected.
-                  throw new Error("Access denied: path outside repository root");
-                }
-                return resolvedPath;
-              })();
+                res.statusCode = 200;
+                res.setHeader("Content-Type", "application/json");
+                res.end(JSON.stringify({ results: result.data }));
+              } catch (err) {
+                res.statusCode = 500;
+                res.setHeader("Content-Type", "application/json");
+                res.end(
+                  JSON.stringify({
+                    error: (err as Error)?.message || "search_failed",
+                  }),
+                );
+              }
+            });
 
-              const filters =
-                body.filters && typeof body.filters === "object"
-                  ? body.filters
-                  : {
-                    all: [
-                      {
-                        key: "path",
-                        operator: "starts_with",
-                        value: searchPath,
-                      },
-                    ],
-                  };
+            req.on("error", (err) => {
+              console.error("[serve] request error:", err);
+              aborted = true;
+            });
 
-              const results = await store!.search(
-                storeId,
-                query,
-                limit,
-                { rerank },
-                filters,
-              );
-              const dense = toDenseResults(root, results.data);
+            return;
+          }
 
-              // INJECT STATUS
-              const responsePayload = {
-                results: dense,
-                status: indexState.isIndexing ? "indexing" : "ready",
-                progress: indexState.isIndexing
-                  ? Math.round((indexState.indexed / indexState.total) * 100)
-                  : 100,
-              };
-
-              return respondJson(res, 200, responsePayload);
-            } catch (err) {
-              console.error("Search handler failed:", err);
-              return respondJson(res, 500, { error: "search_failed" });
-            }
-          });
-          return;
+          res.statusCode = 404;
+          res.end();
+        } catch (err) {
+          console.error("[serve] request handler error:", err);
+          if (!res.headersSent) {
+            res.statusCode = 500;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ error: "internal_error" }));
+          }
         }
-
-        return respondJson(res, 404, { error: "not_found" });
       });
 
-      server!.listen(port, "127.0.0.1", async () => {
-        await writeServerLock(port, process.pid, root, authToken);
-        const lock = await readServerLock(root);
-        console.log(
-          `osgrep serve listening on port ${port} (lock: ${lock?.pid ?? "n/a"})`,
-        );
+      server.listen(port, () => {
+        if (!process.env.OSGREP_BACKGROUND) {
+          console.log(
+            `osgrep server listening on http://localhost:${port} (${projectRoot})`,
+          );
+        }
+        registerServer({
+          pid: process.pid,
+          port,
+          projectRoot,
+          startTime: Date.now(),
+        });
       });
+      server.on("error", (err) => {
+        console.error("[serve] server error:", err);
+      });
+
+      const shutdown = async () => {
+        unregisterServer(process.pid);
+        server.close();
+        // Clean close of vectorDB
+        try {
+          await vectorDb.close();
+        } catch (e) {
+          console.error("Error closing vector DB:", e);
+        }
+        await gracefulExit();
+      };
+
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
     } catch (error) {
-      console.error(
-        "Failed to start osgrep server:",
-        error instanceof Error ? error.message : "Unknown error",
-      );
-      await shutdown();
+      const message = error instanceof Error ? error.message : "Unknown error";
+      console.error("Serve failed:", message);
+      process.exitCode = 1;
+      await gracefulExit(1);
+    }
+  });
+
+serve
+  .command("status")
+  .description("Show status of background servers")
+  .action(() => {
+    const servers = listServers();
+    if (servers.length === 0) {
+      console.log("No running servers found.");
+      return;
+    }
+    console.log("Running servers:");
+    servers.forEach((s) => {
+      console.log(`- PID: ${s.pid} | Port: ${s.port} | Root: ${s.projectRoot}`);
+    });
+  });
+
+serve
+  .command("stop")
+  .description("Stop background servers")
+  .option("--all", "Stop all servers", false)
+  .action((options) => {
+    if (options.all) {
+      const servers = listServers();
+      let count = 0;
+      servers.forEach((s) => {
+        try {
+          process.kill(s.pid, "SIGTERM");
+          count++;
+        } catch (e) {
+          console.error(`Failed to stop PID ${s.pid}:`, e);
+        }
+      });
+      console.log(`Stopped ${count} servers.`);
+    } else {
+      const projectRoot = findProjectRoot(process.cwd()) ?? process.cwd();
+      const server = getServerForProject(projectRoot);
+      if (server) {
+        try {
+          process.kill(server.pid, "SIGTERM");
+          console.log(`Stopped server for ${projectRoot} (PID: ${server.pid})`);
+        } catch (e) {
+          console.error(`Failed to stop PID ${server.pid}:`, e);
+        }
+      } else {
+        console.log(`No server found for ${projectRoot}`);
+      }
     }
   });

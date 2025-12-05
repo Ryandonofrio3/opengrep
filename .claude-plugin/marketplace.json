@@ -15,9 +15,7 @@
         "name": "Ryan D'Onofrio",
         "email": "ryandonofrio@gmail.com"
       },
-      "skills": [
-        "./skills/osgrep"
-      ]
+      "skills": ["./skills/osgrep"]
     }
   ]
 }
