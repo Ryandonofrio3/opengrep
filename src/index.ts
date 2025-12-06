@@ -6,7 +6,6 @@ import { installClaudeCode } from "./commands/claude-code";
 import { doctor } from "./commands/doctor";
 import { index } from "./commands/index";
 import { list } from "./commands/list";
-import { installOpencode, uninstallOpencode } from "./commands/opencode";
 import { search } from "./commands/search";
 import { serve } from "./commands/serve";
 import { setup } from "./commands/setup";
@@ -47,8 +46,6 @@ program.addCommand(symbols);
 program.addCommand(setup);
 program.addCommand(serve);
 program.addCommand(installClaudeCode);
-program.addCommand(installOpencode);
-program.addCommand(uninstallOpencode);
 program.addCommand(doctor);
 
 program.parse();

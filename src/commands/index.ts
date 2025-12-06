@@ -11,7 +11,6 @@ import { VectorDB } from "../lib/store/vector-db";
 import { gracefulExit } from "../lib/utils/exit";
 import { ensureProjectPaths, findProjectRoot } from "../lib/utils/project-root";
 
-export { installOpencode, uninstallOpencode } from "./opencode";
 
 export const index = new Command("index")
   .description("Index the current directory and create searchable store")
