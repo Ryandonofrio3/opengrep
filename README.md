@@ -9,11 +9,11 @@
 Natural-language search that works like `grep`. Fast, local, and built for coding agents.
 
 - **Semantic:** Finds concepts ("where do transactions get created?"), not just strings.
-- **Call Graph Tracing:** Map dependencies with `--trace` to see who calls what.
+- **Call Graph Tracing:** Map dependencies with `trace` to see who calls what.
 - **Role Detection:** Distinguishes `ORCHESTRATION` (high-level logic) from `DEFINITION` (types/classes).
 - **Local & Private:** 100% local embeddings via `onnxruntime-node`.
 - **Auto-Isolated:** Each repository gets its own index automatically.
-- **Agent-Ready:** Native JSON output with symbols, roles, and call graphs.
+- **Agent-Ready:** Native output with symbols, roles, and call graphs.
 
 ## Quick Start
 
@@ -42,7 +42,7 @@ Natural-language search that works like `grep`. Fast, local, and built for codin
 4.  **Trace** (Call Graph)
 
     ```bash
-    osgrep search --trace "function_name"
+    osgrep trace "function_name"
     ```
 
     See who calls a function (upstream dependencies) and what it calls (downstream dependencies). Perfect for impact analysis and understanding code flow.
@@ -79,7 +79,6 @@ osgrep "how is the database connection pooled?" --json
 | `--per-file <n>` | Max matches to show per file. | `1` |
 | `-c`, `--content` | Show full chunk content instead of snippets. | `false` |
 | `--compact` | Show file paths only (like `grep -l`). | `false` |
-| `--trace <symbol>` | Trace call graph for a specific symbol (who calls it, what it calls). | - |
 | `-s`, `--sync` | Force re-index changed files before searching. | `false` |
 | `-r`, `--reset` | Reset the index and re-index from scratch. | `false` |
 
