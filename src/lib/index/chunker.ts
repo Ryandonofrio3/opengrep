@@ -300,6 +300,13 @@ export class TreeSitterChunker {
     content: string,
   ): Promise<ChunkingResult> {
     const ext = path.extname(filePath);
+    if (ext === ".json") {
+      return {
+        chunks: [],
+        metadata: { imports: [], exports: [], comments: [] },
+      };
+    }
+
     const langDef = getLanguageByExtension(ext);
     const lang = langDef?.grammar?.name || "";
     if (!lang)

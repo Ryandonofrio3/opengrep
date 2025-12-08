@@ -29,7 +29,8 @@ type TaskResults = {
 
 type WorkerMessage =
   | { id: number; result: TaskResults[TaskMethod] }
-  | { id: number; error: string };
+  | { id: number; error: string }
+  | { id: number; heartbeat: true };
 
 function reviveBufferLike(input: unknown): Buffer | Int8Array | unknown {
   if (
@@ -169,8 +170,7 @@ export class WorkerPool {
       this.clearTaskTimeout(task);
       task.reject(
         new Error(
-          `Worker exited unexpectedly${code ? ` (code ${code})` : ""}${
-            signal ? ` signal ${signal}` : ""
+          `Worker exited unexpectedly${code ? ` (code ${code})` : ""}${signal ? ` signal ${signal}` : ""
           }`,
         ),
       );
@@ -190,6 +190,18 @@ export class WorkerPool {
     const onMessage = (msg: WorkerMessage) => {
       const task = this.tasks.get(msg.id);
       if (!task) return;
+
+      if ("heartbeat" in msg) {
+        // Reset timeout
+        this.clearTaskTimeout(task);
+        if (task.worker) {
+          task.timeout = setTimeout(
+            () => this.handleTaskTimeout(task, task.worker!),
+            TASK_TIMEOUT_MS,
+          );
+        }
+        return;
+      }
 
       if ("error" in msg) {
         task.reject(new Error(msg.error));
@@ -254,7 +266,7 @@ export class WorkerPool {
     worker.child.removeAllListeners("exit");
     try {
       worker.child.kill("SIGKILL");
-    } catch {}
+    } catch { }
 
     this.workers = this.workers.filter((w) => w !== worker);
     if (!this.destroyed) {
@@ -339,7 +351,7 @@ export class WorkerPool {
           const force = setTimeout(() => {
             try {
               w.child.kill("SIGKILL");
-            } catch {}
+            } catch { }
           }, FORCE_KILL_GRACE_MS);
           setTimeout(() => {
             clearTimeout(force);
