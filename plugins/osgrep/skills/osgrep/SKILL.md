@@ -20,11 +20,24 @@ allowed-tools: "Bash(osgrep:*), Read"
 
 ```bash
 osgrep "how requests flow from client to server"   # Semantic search
-osgrep "auth" --skeleton                           # Search + compress results
 osgrep skeleton src/server.ts                      # Compress specific file  
 osgrep trace handleRequest                         # Who calls / what calls
 osgrep symbols                                     # List main symbols
 ```
+
+## CRITICAL: Skeleton Shows WHERE, Read Shows HOW
+
+Skeleton gives you the map. **You must still read the territory.**
+
+```
+skeleton output:
+  handleRequest(req: Request): Response {
+    // -> validateAuth, routeRequest, sendResponse | C:12 | ORCH
+  }
+```
+
+This tells you handleRequest is important (ORCH, high complexity, calls 3 key functions).
+**But you don't know HOW it works until you Read it.**
 
 ## Workflow: Architecture Questions
 
@@ -34,16 +47,25 @@ osgrep symbols                                     # List main symbols
 # 1. Find entry points
 osgrep "where do client requests enter the server"
 
-# 2. Get structure of key files (80-95% smaller than reading)
+# 2. Skeleton to see structure and find ORCH functions
 osgrep skeleton src/server/handler.ts
-osgrep skeleton src/client/api.ts
+# Look for: high complexity (C:8+), ORCH role, many calls
 
-# 3. Trace the flow
+# 3. READ THE ORCHESTRATORS - this is where the logic lives
+Read src/server/handler.ts:45-120   # <-- DON'T SKIP THIS
+
+# 4. Trace dependencies if needed
 osgrep trace handleRequest
 
-# 4. Read specific code ONLY if needed
-Read src/server/handler.ts:45-60
+# 5. Read the key callees to understand the full flow
+Read src/auth/validator.ts:30-60
+Read src/router/dispatch.ts:15-45
 ```
+
+**The skeleton tells you WHAT exists and WHERE to look.**
+**Reading tells you HOW it actually works.**
+
+If you only skeleton and never read, you'll produce confident-sounding but shallow answers.
 
 ## Workflow: Find Specific Code
 
@@ -51,19 +73,19 @@ Read src/server/handler.ts:45-60
 
 ```bash
 osgrep "JWT token validation and expiration checking"
-# → src/auth/jwt.ts:45  validateToken  ORCH
+# -> src/auth/jwt.ts:45  validateToken  ORCH
 
 Read src/auth/jwt.ts:45-80
 ```
 
 ## Output Guide
 
-### Search Results (--compact)
+### Search Results
 ```
 path                lines   score  role  defined
 src/auth/jwt.ts     45-89   .94    ORCH  validateToken
 ```
-- **ORCH** = orchestrates other code (usually what you want)
+- **ORCH** = orchestrates other code - **READ THESE for architecture questions**
 - **DEF** = definition (class, type)
 
 ### Skeleton Output
@@ -76,8 +98,7 @@ export class JWTService {
 }
 ```
 - Shows signatures, hides bodies
-- Summary: what it calls, complexity, role
-- **~85 tokens vs ~800 for full file**
+- **C:8 | ORCH = complex orchestrator = READ THIS FUNCTION**
 
 ## Query Tips
 
@@ -89,8 +110,6 @@ osgrep "auth"
 osgrep "where does the server validate JWT tokens before processing requests"
 ```
 
-**More words = better results.** Describe what you're looking for like you'd ask a colleague.
-
 ## If Index is Building
 
-If you see "Indexing" or "Syncing": STOP. Tell the user the index is building. Ask if they want to wait or proceed with partial results.
+If you see "Indexing" or "Syncing": STOP. Tell the user the index is building.
