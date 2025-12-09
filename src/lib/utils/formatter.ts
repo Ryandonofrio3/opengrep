@@ -99,7 +99,7 @@ export function formatTextResults(
     let output = "";
 
     // Keep snippets compact but present so agents still see the code.
-    const maxLines = 16;
+    const maxLines = 20;
 
     results.forEach((item) => {
       const relPath = path.relative(root, item.path);

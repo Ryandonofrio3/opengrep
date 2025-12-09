@@ -356,10 +356,10 @@ export const search: Command = new CommanderCommand("search")
   .option(
     "-m <max_count>, --max-count <max_count>",
     "The maximum number of results to return (total)",
-    "10",
+    "5",
   )
   .option("-c, --content", "Show full chunk content instead of snippets", false)
-  .option("--per-file <n>", "Number of matches to show per file", "1")
+  .option("--per-file <n>", "Number of matches to show per file", "3")
   .option("--scores", "Show relevance scores", false)
   .option(
     "--min-score <score>",
